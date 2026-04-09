@@ -52,6 +52,25 @@ class DebugStore:
         )
         return str(path)
 
+    def save_full_audio(self, session_id: str, payload: bytes, mime_type: str | None, reason: str) -> tuple[str, int]:
+        session_dir = self._session_dir(session_id) / "audio"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        extension = self._audio_extension(mime_type)
+        path = session_dir / f"session_full.{extension}"
+        path.write_bytes(payload)
+
+        self.append_event(
+            session_id,
+            {
+                "type": "full_audio_saved",
+                "path": str(path),
+                "mimeType": mime_type,
+                "reason": reason,
+                "sizeBytes": len(payload),
+            },
+        )
+        return str(path), len(payload)
+
     def save_video_frame(self, session_id: str, frame_index: int, image_base64: str | None) -> str:
         session_dir = self._session_dir(session_id) / "frames"
         session_dir.mkdir(parents=True, exist_ok=True)

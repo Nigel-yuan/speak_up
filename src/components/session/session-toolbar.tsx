@@ -6,7 +6,10 @@ const languageOptions = [
 ] as const;
 
 interface SessionToolbarProps {
+  debugEnabled: boolean;
+  debugToggleDisabled?: boolean;
   language: LanguageOption;
+  onDebugToggle: () => void;
   onHistoryToggle: () => void;
   onLanguageChange: (language: LanguageOption) => void;
   onScenarioChange: (scenario: ScenarioType) => void;
@@ -17,7 +20,10 @@ interface SessionToolbarProps {
 }
 
 export function SessionToolbar({
+  debugEnabled,
+  debugToggleDisabled = false,
   language,
+  onDebugToggle,
   onHistoryToggle,
   onLanguageChange,
   onScenarioChange,
@@ -43,6 +49,18 @@ export function SessionToolbar({
         className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-[0_10px_25px_rgba(15,23,42,0.06)] transition hover:border-violet-200 hover:bg-violet-50 hover:text-violet-700"
       >
         历史演讲
+      </button>
+      <button
+        type="button"
+        onClick={onDebugToggle}
+        disabled={debugToggleDisabled}
+        className={`rounded-full border px-4 py-2 text-sm font-semibold shadow-[0_10px_25px_rgba(15,23,42,0.06)] transition disabled:cursor-not-allowed disabled:opacity-50 ${
+          debugEnabled
+            ? "border-amber-200 bg-amber-50 text-amber-900 hover:bg-amber-100"
+            : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50"
+        }`}
+      >
+        Debug Dump · {debugEnabled ? "开" : "关"}
       </button>
 
       {scenarioOpen ? (
@@ -89,6 +107,13 @@ export function SessionToolbar({
                 </button>
               ))}
             </div>
+          </div>
+
+          <div className="mt-3 border-t border-slate-200 px-3 pt-3">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">Debug</p>
+            <p className="text-xs leading-5 text-slate-500">
+              默认关闭。关闭时仍会正常请求麦克风并进行实时会话，只是不写 debug 日志和 dump 文件。
+            </p>
           </div>
         </div>
       ) : null}

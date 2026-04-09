@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.data.history import HISTORICAL_SESSIONS, get_report_by_scenario
@@ -6,6 +6,7 @@ from app.data.scenarios import SCENARIOS
 from app.data.session_stream import get_session_frames
 from app.schemas import (
     ClientMessage,
+    DebugAudioUploadResponse,
     HistoricalSessionSummary,
     InjectInsightRequest,
     InjectTranscriptRequest,
@@ -68,7 +69,7 @@ def get_report(
 
 @app.post("/api/session/start", response_model=RealtimeSessionResponse)
 def start_session(payload: StartSessionRequest) -> RealtimeSessionResponse:
-    session = session_manager.create_session(payload.scenarioId, payload.language)
+    session = session_manager.create_session(payload.scenarioId, payload.language, payload.debugEnabled)
     return RealtimeSessionResponse(
         **session.to_schema().model_dump(),
         websocketUrl=f"ws://127.0.0.1:8000/ws/session/{session.session_id}",
@@ -89,6 +90,23 @@ def finish_session(session_id: str) -> RealtimeSession:
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
     return session.to_schema()
+
+
+@app.post("/api/session/{session_id}/debug/full-audio", response_model=DebugAudioUploadResponse)
+async def upload_full_audio(
+    session_id: str,
+    audio_file: UploadFile = File(...),
+    reason: str = Form(...),
+    mime_type: str | None = Form(default=None),
+) -> DebugAudioUploadResponse:
+    session = session_manager.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not session.debug_enabled:
+        raise HTTPException(status_code=409, detail="Debug dump is disabled for this session")
+
+    path, size_bytes = await session_manager.save_full_audio(session, audio_file, reason, mime_type)
+    return DebugAudioUploadResponse(path=path, sizeBytes=size_bytes)
 
 
 @app.post("/api/session/{session_id}/inject-transcript", response_model=RealtimeSession)

@@ -28,4 +28,5 @@ export interface LiveInsight {
 export interface SessionSetup {
   scenarioId: ScenarioType;
   language: LanguageOption;
+  debugEnabled: boolean;
 }

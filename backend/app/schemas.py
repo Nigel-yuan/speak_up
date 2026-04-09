@@ -55,6 +55,7 @@ class LiveInsight(BaseModel):
 class SessionSetup(BaseModel):
     scenarioId: ScenarioType
     language: LanguageOption
+    debugEnabled: bool = False
 
 
 class RadarMetric(BaseModel):
@@ -101,12 +102,14 @@ class SessionStreamFrame(BaseModel):
 class StartSessionRequest(BaseModel):
     scenarioId: ScenarioType
     language: LanguageOption
+    debugEnabled: bool = False
 
 
 class RealtimeSession(BaseModel):
     sessionId: str
     scenarioId: ScenarioType
     language: LanguageOption
+    debugEnabled: bool = False
     status: SessionStatus
     transcriptCount: int = 0
     insightCount: int = 0
@@ -116,6 +119,11 @@ class RealtimeSession(BaseModel):
 
 class RealtimeSessionResponse(RealtimeSession):
     websocketUrl: str
+
+
+class DebugAudioUploadResponse(BaseModel):
+    path: str
+    sizeBytes: int
 
 
 class RealtimeStatusEvent(BaseModel):

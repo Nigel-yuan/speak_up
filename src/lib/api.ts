@@ -4,13 +4,16 @@ import type { LanguageOption, ScenarioOption, ScenarioType } from "@/types/sessi
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+
+  if (!(init?.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
   const response = await fetch(`${API_BASE_URL}${path}`, {
     cache: "no-store",
     ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
+    headers,
   });
 
   if (!response.ok) {
@@ -45,15 +48,19 @@ export interface SessionStreamFrame {
   };
 }
 
-export interface RealtimeSessionResponse {
+export interface RealtimeSession {
   sessionId: string;
   scenarioId: ScenarioType;
   language: LanguageOption;
+  debugEnabled: boolean;
   status: "created" | "streaming" | "finished";
   transcriptCount: number;
   insightCount: number;
   audioChunkCount: number;
   videoFrameCount: number;
+}
+
+export interface RealtimeSessionResponse extends RealtimeSession {
   websocketUrl: string;
 }
 
@@ -89,10 +96,38 @@ export function getReport(scenario: ScenarioType) {
   return request<SessionReport>(`/api/report?scenario=${scenario}`);
 }
 
-export function startRealtimeSession(scenarioId: ScenarioType, language: LanguageOption) {
+export function startRealtimeSession(
+  scenarioId: ScenarioType,
+  language: LanguageOption,
+  debugEnabled: boolean,
+) {
   return request<RealtimeSessionResponse>("/api/session/start", {
     method: "POST",
-    body: JSON.stringify({ scenarioId, language }),
+    body: JSON.stringify({ scenarioId, language, debugEnabled }),
+  });
+}
+
+export function finishRealtimeSession(sessionId: string) {
+  return request<RealtimeSession>(`/api/session/${sessionId}/finish`, {
+    method: "POST",
+  });
+}
+
+export async function uploadSessionFullAudio(
+  sessionId: string,
+  audioBlob: Blob,
+  reason: "pause" | "finish",
+) {
+  const formData = new FormData();
+  formData.append("audio_file", audioBlob, "session_full.webm");
+  formData.append("reason", reason);
+  if (audioBlob.type) {
+    formData.append("mime_type", audioBlob.type);
+  }
+
+  await request<{ path: string; sizeBytes: number }>(`/api/session/${sessionId}/debug/full-audio`, {
+    method: "POST",
+    body: formData,
   });
 }
 

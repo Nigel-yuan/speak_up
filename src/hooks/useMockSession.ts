@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  finishRealtimeSession,
   startRealtimeSession,
+  uploadSessionFullAudio,
   type OutboundRealtimeMessage,
   type RealtimeEvent,
 } from "@/lib/api";
@@ -12,6 +14,7 @@ import type { LiveInsight, SessionSetup, TranscriptChunk } from "@/types/session
 interface SessionState {
   error: string | null;
   isConnecting: boolean;
+  isFinalizing: boolean;
   partialTranscript: string | null;
   sessionId: string | null;
   socketStatus: "idle" | "connecting" | "connected" | "closed";
@@ -20,6 +23,7 @@ interface SessionState {
 const idleSessionState: SessionState = {
   error: null,
   isConnecting: false,
+  isFinalizing: false,
   partialTranscript: null,
   sessionId: null,
   socketStatus: "idle",
@@ -31,6 +35,9 @@ export function useMockSession(setup: SessionSetup) {
   const videoFrameProviderRef = useRef<(() => string | null) | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const recorderMimeTypeRef = useRef("audio/webm");
+  const pendingChunkTasksRef = useRef<Set<Promise<void>>>(new Set());
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
   const [transcript, setTranscript] = useState<TranscriptChunk[]>([]);
@@ -49,11 +56,9 @@ export function useMockSession(setup: SessionSetup) {
     }
   }, []);
 
-  const stopAudioCapture = useCallback(() => {
-    recorderRef.current?.stop();
-    recorderRef.current = null;
-    audioStreamRef.current?.getTracks().forEach((track) => track.stop());
-    audioStreamRef.current = null;
+  const resetRecordedAudio = useCallback(() => {
+    recordedChunksRef.current = [];
+    recorderMimeTypeRef.current = "audio/webm";
   }, []);
 
   const clearSessionView = useCallback(() => {
@@ -83,12 +88,103 @@ export function useMockSession(setup: SessionSetup) {
     });
   }, [sendRealtimeMessage]);
 
+  const buildRecordedAudioBlob = useCallback(() => {
+    if (recordedChunksRef.current.length === 0) {
+      return null;
+    }
+
+    return new Blob(recordedChunksRef.current, {
+      type: recorderMimeTypeRef.current || "audio/webm",
+    });
+  }, []);
+
+  const waitForPendingChunkTasks = useCallback(async () => {
+    const tasks = Array.from(pendingChunkTasksRef.current);
+    if (tasks.length === 0) {
+      return;
+    }
+
+    await Promise.allSettled(tasks);
+  }, []);
+
+  const stopAudioCapture = useCallback(async () => {
+    const recorder = recorderRef.current;
+    const stream = audioStreamRef.current;
+
+    recorderRef.current = null;
+    audioStreamRef.current = null;
+
+    const stopTracks = () => {
+      stream?.getTracks().forEach((track) => track.stop());
+    };
+
+    if (!recorder) {
+      stopTracks();
+      return buildRecordedAudioBlob();
+    }
+
+    if (recorder.state === "inactive") {
+      stopTracks();
+      return buildRecordedAudioBlob();
+    }
+
+    const stopPromise = new Promise<Blob | null>((resolve) => {
+      recorder.addEventListener(
+        "stop",
+        () => {
+          stopTracks();
+          resolve(buildRecordedAudioBlob());
+        },
+        { once: true },
+      );
+    });
+
+    recorder.stop();
+    return stopPromise;
+  }, [buildRecordedAudioBlob]);
+
+  const discardAudioCapture = useCallback(async () => {
+    await stopAudioCapture();
+    await waitForPendingChunkTasks();
+    resetRecordedAudio();
+  }, [resetRecordedAudio, stopAudioCapture, waitForPendingChunkTasks]);
+
+  const finalizeAudioCapture = useCallback(async (reason: "pause" | "finish", sessionId: string | null) => {
+    const audioBlob = await stopAudioCapture();
+    await waitForPendingChunkTasks();
+
+    if (!setup.debugEnabled) {
+      resetRecordedAudio();
+      return;
+    }
+
+    if (!audioBlob || audioBlob.size === 0) {
+      resetRecordedAudio();
+      return;
+    }
+
+    if (!sessionId) {
+      resetRecordedAudio();
+      return;
+    }
+
+    try {
+      await uploadSessionFullAudio(sessionId, audioBlob, reason);
+    } catch {
+      throw new Error("完整调试录音保存失败");
+    } finally {
+      resetRecordedAudio();
+    }
+  }, [resetRecordedAudio, setup.debugEnabled, stopAudioCapture, waitForPendingChunkTasks]);
+
   const startAudioCapture = useCallback(async () => {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     audioStreamRef.current = stream;
     const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
       ? "audio/webm;codecs=opus"
       : "audio/webm";
+    resetRecordedAudio();
+    recorderMimeTypeRef.current = mimeType;
     const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
     recorderRef.current = recorder;
 
@@ -97,29 +193,40 @@ export function useMockSession(setup: SessionSetup) {
         return;
       }
 
-      const payload = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          if (typeof reader.result === "string") {
-            resolve(reader.result);
-            return;
-          }
-          reject(new Error("audio chunk read failed"));
-        };
-        reader.onerror = () => reject(reader.error ?? new Error("audio chunk read failed"));
-        reader.readAsDataURL(event.data);
-      });
+      if (setup.debugEnabled) {
+        recordedChunksRef.current.push(event.data);
+      }
 
-      sendRealtimeMessage({
-        type: "audio_chunk",
-        timestamp_ms: Date.now(),
-        payload,
-        mime_type: event.data.type || "audio/webm",
+      const task = (async () => {
+        const payload = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            if (typeof reader.result === "string") {
+              resolve(reader.result);
+              return;
+            }
+            reject(new Error("audio chunk read failed"));
+          };
+          reader.onerror = () => reject(reader.error ?? new Error("audio chunk read failed"));
+          reader.readAsDataURL(event.data);
+        });
+
+        sendRealtimeMessage({
+          type: "audio_chunk",
+          timestamp_ms: Date.now(),
+          payload,
+          mime_type: event.data.type || "audio/webm",
+        });
+      })();
+
+      pendingChunkTasksRef.current.add(task);
+      void task.finally(() => {
+        pendingChunkTasksRef.current.delete(task);
       });
     });
 
     recorder.start(1500);
-  }, [sendRealtimeMessage]);
+  }, [resetRecordedAudio, sendRealtimeMessage, setup.debugEnabled]);
 
   useEffect(() => {
     if (!isRunning) {
@@ -136,24 +243,25 @@ export function useMockSession(setup: SessionSetup) {
   }, [isRunning]);
 
   const start = useCallback(async () => {
-    if (sessionState.isConnecting) {
+    if (sessionState.isConnecting || sessionState.isFinalizing) {
       return;
     }
 
     clearMediaTimer();
+    await discardAudioCapture();
     clearSocket();
-    stopAudioCapture();
     clearSessionView();
     setSessionState({
       error: null,
       isConnecting: true,
+      isFinalizing: false,
       partialTranscript: null,
       sessionId: null,
       socketStatus: "connecting",
     });
 
     try {
-      const session = await startRealtimeSession(setup.scenarioId, setup.language);
+      const session = await startRealtimeSession(setup.scenarioId, setup.language, setup.debugEnabled);
       const socket = new WebSocket(session.websocketUrl);
       socketRef.current = socket;
 
@@ -161,6 +269,7 @@ export function useMockSession(setup: SessionSetup) {
         setSessionState({
           error: null,
           isConnecting: false,
+          isFinalizing: false,
           partialTranscript: null,
           sessionId: session.sessionId,
           socketStatus: "connected",
@@ -205,7 +314,7 @@ export function useMockSession(setup: SessionSetup) {
         if (payload.type === "session_status" && payload.status === "finished") {
           setIsRunning(false);
           clearMediaTimer();
-          stopAudioCapture();
+          void discardAudioCapture();
           return;
         }
 
@@ -216,14 +325,14 @@ export function useMockSession(setup: SessionSetup) {
 
       socket.addEventListener("close", () => {
         clearMediaTimer();
-        stopAudioCapture();
+        void discardAudioCapture();
         setIsRunning(false);
         setSessionState((previous) => ({ ...previous, isConnecting: false, socketStatus: "closed" }));
       });
 
       socket.addEventListener("error", () => {
         clearMediaTimer();
-        stopAudioCapture();
+        void discardAudioCapture();
         setIsRunning(false);
         setSessionState((previous) => ({
           ...previous,
@@ -236,6 +345,7 @@ export function useMockSession(setup: SessionSetup) {
       setSessionState({
         error: "实时会话启动失败",
         isConnecting: false,
+        isFinalizing: false,
         partialTranscript: null,
         sessionId: null,
         socketStatus: "closed",
@@ -245,27 +355,59 @@ export function useMockSession(setup: SessionSetup) {
     clearMediaTimer,
     clearSessionView,
     clearSocket,
+    discardAudioCapture,
     sendRealtimeMessage,
     sendVideoDebugEvent,
     sessionState.isConnecting,
+    sessionState.isFinalizing,
     setup.language,
     setup.scenarioId,
+    setup.debugEnabled,
     startAudioCapture,
-    stopAudioCapture,
   ]);
 
-  const pause = useCallback(() => {
+  const pause = useCallback(async () => {
     setIsRunning(false);
     clearMediaTimer();
-    stopAudioCapture();
-  }, [clearMediaTimer, stopAudioCapture]);
+    setSessionState((previous) => ({ ...previous, error: null, isFinalizing: true }));
 
-  const reset = useCallback(() => {
+    try {
+      await finalizeAudioCapture("pause", sessionState.sessionId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "完整调试录音保存失败";
+      setSessionState((previous) => ({ ...previous, error: message }));
+      throw error;
+    } finally {
+      setSessionState((previous) => ({ ...previous, isFinalizing: false }));
+    }
+  }, [clearMediaTimer, finalizeAudioCapture, sessionState.sessionId]);
+
+  const finish = useCallback(async () => {
+    setIsRunning(false);
     clearMediaTimer();
+    setSessionState((previous) => ({ ...previous, error: null, isFinalizing: true }));
+
+    try {
+      await finalizeAudioCapture("finish", sessionState.sessionId);
+      if (sessionState.sessionId) {
+        await finishRealtimeSession(sessionState.sessionId);
+      }
+      clearSocket();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "结束会话失败";
+      setSessionState((previous) => ({ ...previous, error: message }));
+      throw error;
+    } finally {
+      setSessionState((previous) => ({ ...previous, isFinalizing: false }));
+    }
+  }, [clearMediaTimer, clearSocket, finalizeAudioCapture, sessionState.sessionId]);
+
+  const reset = useCallback(async () => {
+    clearMediaTimer();
+    await discardAudioCapture();
     clearSocket();
-    stopAudioCapture();
     clearSessionView();
-  }, [clearMediaTimer, clearSessionView, clearSocket, stopAudioCapture]);
+  }, [clearMediaTimer, clearSessionView, clearSocket, discardAudioCapture]);
 
   const currentInsight = insights[0] ?? null;
 
@@ -282,19 +424,32 @@ export function useMockSession(setup: SessionSetup) {
       return "正在连接后端实时调试通道...";
     }
 
+    if (sessionState.isFinalizing) {
+      return setup.debugEnabled ? "正在保存完整调试录音..." : "正在结束会话...";
+    }
+
     if (sessionState.sessionId) {
-      return `Debug Session: ${sessionState.sessionId}`;
+      return setup.debugEnabled ? `Debug Session: ${sessionState.sessionId}` : `Session: ${sessionState.sessionId}`;
     }
 
     return null;
-  }, [sessionState.error, sessionState.isConnecting, sessionState.sessionId]);
+  }, [sessionState.error, sessionState.isConnecting, sessionState.isFinalizing, sessionState.sessionId, setup.debugEnabled]);
+
+  useEffect(() => {
+    return () => {
+      clearMediaTimer();
+      clearSocket();
+      void discardAudioCapture();
+    };
+  }, [clearMediaTimer, clearSocket, discardAudioCapture]);
 
   return {
     currentInsight,
     elapsedSeconds,
     insights,
-    isLoading: sessionState.isConnecting,
+    isLoading: sessionState.isConnecting || sessionState.isFinalizing,
     error: sessionState.error,
+    finish,
     isRunning,
     partialTranscript: sessionState.partialTranscript,
     sessionId: sessionState.sessionId,

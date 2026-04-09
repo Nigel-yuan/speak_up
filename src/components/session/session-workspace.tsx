@@ -25,6 +25,7 @@ export function SessionWorkspace({
 }: SessionWorkspaceProps) {
   const router = useRouter();
   const { error: sessionError, history, saveResult } = useSessionResult();
+  const [debugEnabled, setDebugEnabled] = useState(false);
   const [language, setLanguage] = useState<LanguageOption>(defaultLanguage);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [scenarioOpen, setScenarioOpen] = useState(false);
@@ -80,11 +81,12 @@ export function SessionWorkspace({
     return scenarios.some((item) => item.id === selectedScenarioId) ? selectedScenarioId : scenarios[0].id;
   }, [scenarios, selectedScenarioId]);
 
-  const session = useMockSession({ scenarioId, language });
+  const session = useMockSession({ scenarioId, language, debugEnabled });
   const {
     currentInsight,
     elapsedSeconds,
     error,
+    finish,
     insights,
     isLoading,
     isRunning,
@@ -107,7 +109,8 @@ export function SessionWorkspace({
 
   const finishSession = async () => {
     try {
-      await saveResult({ scenarioId, language });
+      await finish();
+      await saveResult({ scenarioId, language, debugEnabled });
       router.push("/report");
     } catch {
       return;
@@ -150,7 +153,10 @@ export function SessionWorkspace({
       <div className="mx-auto grid h-full max-w-[1720px] gap-4 xl:grid-cols-[minmax(0,1.75fr)_420px]">
         <section className="flex min-h-0 flex-col gap-3">
           <SessionToolbar
+            debugEnabled={debugEnabled}
+            debugToggleDisabled={isRunning || isLoading}
             language={language}
+            onDebugToggle={() => setDebugEnabled((value) => !value)}
             onHistoryToggle={() => setHistoryOpen((value) => !value)}
             onLanguageChange={setLanguage}
             onScenarioChange={setSelectedScenarioId}

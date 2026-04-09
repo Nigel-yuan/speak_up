@@ -4,7 +4,7 @@ from datetime import datetime, UTC
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import WebSocket
+from fastapi import UploadFile, WebSocket
 
 from app.data.session_stream import get_session_frames_for_realtime
 from app.schemas import (
@@ -36,6 +36,7 @@ class SessionRecord:
     session_id: str
     scenario_id: ScenarioType
     language: LanguageOption
+    debug_enabled: bool = False
     status: SessionStatus = "created"
     transcript_count: int = 0
     insight_count: int = 0
@@ -49,6 +50,7 @@ class SessionRecord:
             sessionId=self.session_id,
             scenarioId=self.scenario_id,
             language=self.language,
+            debugEnabled=self.debug_enabled,
             status=self.status,
             transcriptCount=self.transcript_count,
             insightCount=self.insight_count,
@@ -65,20 +67,27 @@ class SessionManager:
         self.coaching_service = MockCoachingService()
         self.debug_store = DebugStore(Path(__file__).resolve().parents[2] / "debug")
 
-    def create_session(self, scenario_id: ScenarioType, language: LanguageOption) -> SessionRecord:
+    def create_session(self, scenario_id: ScenarioType, language: LanguageOption, debug_enabled: bool) -> SessionRecord:
         session_id = uuid4().hex
-        session = SessionRecord(session_id=session_id, scenario_id=scenario_id, language=language)
-        self.sessions[session_id] = session
-        self.debug_store.init_session(
-            session_id,
-            {
-                "sessionId": session_id,
-                "scenarioId": scenario_id,
-                "language": language,
-                "status": session.status,
-                "createdAt": datetime.now(UTC).isoformat(),
-            },
+        session = SessionRecord(
+            session_id=session_id,
+            scenario_id=scenario_id,
+            language=language,
+            debug_enabled=debug_enabled,
         )
+        self.sessions[session_id] = session
+        if session.debug_enabled:
+            self.debug_store.init_session(
+                session_id,
+                {
+                    "sessionId": session_id,
+                    "scenarioId": scenario_id,
+                    "language": language,
+                    "debugEnabled": debug_enabled,
+                    "status": session.status,
+                    "createdAt": datetime.now(UTC).isoformat(),
+                },
+            )
         return session
 
     def get_session(self, session_id: str) -> SessionRecord | None:
@@ -90,10 +99,28 @@ class SessionManager:
             return None
 
         session.status = "finished"
-        self.debug_store.append_event(session_id, {"type": "session_finished", "status": session.status})
+        if session.debug_enabled:
+            self.debug_store.append_event(session_id, {"type": "session_finished", "status": session.status})
         if session.stream_task and not session.stream_task.done():
             session.stream_task.cancel()
         return session
+
+    async def save_full_audio(
+        self,
+        session: SessionRecord,
+        audio_file: UploadFile,
+        reason: str,
+        mime_type: str | None,
+    ) -> tuple[str, int]:
+        if not session.debug_enabled:
+            return "", 0
+        payload = await audio_file.read()
+        return self.debug_store.save_full_audio(
+            session.session_id,
+            payload,
+            mime_type or audio_file.content_type,
+            reason,
+        )
 
     async def connect(self, session: SessionRecord, websocket: WebSocket) -> None:
         await websocket.accept()
@@ -104,8 +131,13 @@ class SessionManager:
         if websocket in session.sockets:
             session.sockets.remove(websocket)
 
+    @staticmethod
+    def _is_debug_enabled(session: SessionRecord) -> bool:
+        return session.debug_enabled
+
     async def handle_client_message(self, session: SessionRecord, message: ClientMessage, websocket: WebSocket) -> None:
-        self.debug_store.append_event(session.session_id, {"type": "client_message", **message.model_dump(exclude={"payload", "image_base64"})})
+        if self._is_debug_enabled(session):
+            self.debug_store.append_event(session.session_id, {"type": "client_message", **message.model_dump(exclude={"payload", "image_base64"})})
 
         if message.type == "ping":
             await websocket.send_json(PongEvent().model_dump())
@@ -123,24 +155,32 @@ class SessionManager:
 
         if message.type == "audio_chunk":
             session.audio_chunk_count += 1
-            path = self.debug_store.save_audio_chunk(
-                session.session_id,
-                session.audio_chunk_count,
-                message.payload,
-                message.mime_type,
-            )
+            path = ""
+            if self._is_debug_enabled(session):
+                path = self.debug_store.save_audio_chunk(
+                    session.session_id,
+                    session.audio_chunk_count,
+                    message.payload,
+                    message.mime_type,
+                )
+            ack_message = self.stt_service.acknowledge_audio_chunk(session.audio_chunk_count)
+            if path:
+                ack_message = f"{ack_message} -> {path}"
             await websocket.send_json(
-                AckEvent(
-                    message=f"{self.stt_service.acknowledge_audio_chunk(session.audio_chunk_count)} -> {path}"
-                ).model_dump()
+                AckEvent(message=ack_message).model_dump()
             )
             return
 
         if message.type == "video_frame":
             session.video_frame_count += 1
-            path = self.debug_store.save_video_frame(session.session_id, session.video_frame_count, message.image_base64)
+            path = ""
+            if self._is_debug_enabled(session):
+                path = self.debug_store.save_video_frame(session.session_id, session.video_frame_count, message.image_base64)
+            ack_message = self.vision_service.acknowledge_video_frame(session.video_frame_count)
+            if path:
+                ack_message = f"{ack_message} -> {path}"
             await websocket.send_json(
-                AckEvent(message=f"{self.vision_service.acknowledge_video_frame(session.video_frame_count)} -> {path}").model_dump()
+                AckEvent(message=ack_message).model_dump()
             )
             return
 
@@ -190,24 +230,28 @@ class SessionManager:
 
     async def broadcast_status(self, session: SessionRecord) -> None:
         await self._broadcast(session, RealtimeStatusEvent(sessionId=session.session_id, status=session.status).model_dump())
-        self.debug_store.append_event(session.session_id, {"type": "status_broadcast", "status": session.status})
+        if self._is_debug_enabled(session):
+            self.debug_store.append_event(session.session_id, {"type": "status_broadcast", "status": session.status})
 
     async def broadcast_partial(self, session: SessionRecord, text: str, source: str) -> None:
         await self._broadcast(session, TranscriptPartialEvent(text=text).model_dump())
-        self.debug_store.append_event(
-            session.session_id,
-            {"type": "partial_broadcast", "source": source, "text": text},
-        )
+        if self._is_debug_enabled(session):
+            self.debug_store.append_event(
+                session.session_id,
+                {"type": "partial_broadcast", "source": source, "text": text},
+            )
 
     async def broadcast_transcript(self, session: SessionRecord, chunk: TranscriptChunk, source: str) -> None:
         session.transcript_count += 1
         await self._broadcast(session, TranscriptFinalEvent(chunk=chunk).model_dump())
-        self.debug_store.save_transcript_injection(session.session_id, chunk, source)
+        if self._is_debug_enabled(session):
+            self.debug_store.save_transcript_injection(session.session_id, chunk, source)
 
     async def broadcast_insight(self, session: SessionRecord, insight: LiveInsight, source: str) -> None:
         session.insight_count += 1
         await self._broadcast(session, self.coaching_service.build_live_insight_event(insight).model_dump())
-        self.debug_store.save_insight_injection(session.session_id, insight, source)
+        if self._is_debug_enabled(session):
+            self.debug_store.save_insight_injection(session.session_id, insight, source)
 
     async def _broadcast(self, session: SessionRecord, payload: dict) -> None:
         stale: list[WebSocket] = []

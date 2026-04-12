@@ -3,18 +3,20 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 
 import { getHistory, getReport } from "@/lib/api";
-import type { SessionReport, HistoricalSessionSummary } from "@/types/report";
-import type { SessionSetup } from "@/types/session";
+import type { HistoricalSessionSummary, SessionReport } from "@/types/report";
+import type { SessionSetup, TranscriptChunk } from "@/types/session";
 
 interface SessionResultContextValue {
   setup: SessionSetup | null;
   report: SessionReport | null;
+  replaySessionId: string | null;
+  transcript: TranscriptChunk[];
   history: HistoricalSessionSummary[];
   historyLoading: boolean;
   reportLoading: boolean;
   error: string | null;
   refreshHistory: () => Promise<void>;
-  saveResult: (setup: SessionSetup) => Promise<void>;
+  saveResult: (setup: SessionSetup, transcript: TranscriptChunk[], sessionId: string | null) => Promise<void>;
 }
 
 const SessionResultContext = createContext<SessionResultContextValue | null>(null);
@@ -22,6 +24,8 @@ const SessionResultContext = createContext<SessionResultContextValue | null>(nul
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [setup, setSetup] = useState<SessionSetup | null>(null);
   const [report, setReport] = useState<SessionReport | null>(null);
+  const [replaySessionId, setReplaySessionId] = useState<string | null>(null);
+  const [transcript, setTranscript] = useState<TranscriptChunk[]>([]);
   const [history, setHistory] = useState<HistoricalSessionSummary[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [reportLoading, setReportLoading] = useState(false);
@@ -45,8 +49,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     void refreshHistory();
   }, [refreshHistory]);
 
-  const saveResult = useCallback(async (nextSetup: SessionSetup) => {
+  const saveResult = useCallback(async (nextSetup: SessionSetup, nextTranscript: TranscriptChunk[], sessionId: string | null) => {
     setSetup(nextSetup);
+    setTranscript(nextTranscript);
+    setReplaySessionId(sessionId);
     setReportLoading(true);
 
     try {
@@ -67,6 +73,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     () => ({
       setup,
       report,
+      replaySessionId,
+      transcript,
       history,
       historyLoading,
       reportLoading,
@@ -74,7 +82,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       refreshHistory,
       saveResult,
     }),
-    [error, history, historyLoading, refreshHistory, report, reportLoading, saveResult, setup],
+    [error, history, historyLoading, refreshHistory, report, reportLoading, saveResult, setup, replaySessionId, transcript],
   );
 
   return <SessionResultContext.Provider value={value}>{children}</SessionResultContext.Provider>;

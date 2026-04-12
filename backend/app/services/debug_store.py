@@ -29,6 +29,24 @@ class DebugStore:
         with (session_dir / "events.jsonl").open("a", encoding="utf-8") as file:
             file.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
+    def append_stt_provider_event(
+        self,
+        session_id: str,
+        provider: str,
+        stage: str,
+        payload: dict[str, Any],
+        summary: dict[str, Any] | None = None,
+    ) -> None:
+        event: dict[str, Any] = {
+            "type": "stt_provider_event",
+            "provider": provider,
+            "stage": stage,
+            "payload": payload,
+        }
+        if summary:
+            event["summary"] = summary
+        self.append_event(session_id, event)
+
     def save_audio_chunk(self, session_id: str, chunk_index: int, payload: str | None, mime_type: str | None) -> str:
         session_dir = self._session_dir(session_id) / "audio"
         session_dir.mkdir(parents=True, exist_ok=True)
@@ -91,6 +109,27 @@ class DebugStore:
             {"type": "transcript_injected", "source": source, "chunk": chunk.model_dump()},
         )
 
+    def save_transcript_merge(
+        self,
+        session_id: str,
+        previous_chunk: TranscriptChunk,
+        incoming_chunk: TranscriptChunk,
+        merged_chunk: TranscriptChunk,
+        reasons: list[str],
+        source: str,
+    ) -> None:
+        self.append_event(
+            session_id,
+            {
+                "type": "transcript_merged",
+                "source": source,
+                "reasons": reasons,
+                "previousChunk": previous_chunk.model_dump(),
+                "incomingChunk": incoming_chunk.model_dump(),
+                "mergedChunk": merged_chunk.model_dump(),
+            },
+        )
+
     def save_insight_injection(self, session_id: str, insight: LiveInsight, source: str) -> None:
         self.append_event(
             session_id,
@@ -113,6 +152,8 @@ class DebugStore:
 
         if normalized == "audio/webm":
             return "webm"
+        if normalized == "audio/pcm":
+            return "pcm"
         if normalized in {"audio/wav", "audio/wave", "audio/x-wav"}:
             return "wav"
         return "bin"

@@ -43,6 +43,8 @@ class TranscriptChunk(BaseModel):
     speaker: TranscriptSpeaker
     text: str
     timestampLabel: str
+    startMs: int = 0
+    endMs: int = 0
 
 
 class LiveInsight(BaseModel):
@@ -121,6 +123,15 @@ class RealtimeSessionResponse(RealtimeSession):
     websocketUrl: str
 
 
+class SessionReplay(BaseModel):
+    sessionId: str
+    scenarioId: ScenarioType
+    language: LanguageOption
+    mediaUrl: str | None = None
+    mediaType: Literal["audio", "video"] | None = None
+    transcript: list[TranscriptChunk]
+
+
 class DebugAudioUploadResponse(BaseModel):
     path: str
     sizeBytes: int
@@ -140,6 +151,7 @@ class TranscriptPartialEvent(BaseModel):
 class TranscriptFinalEvent(BaseModel):
     type: Literal["transcript_final"] = "transcript_final"
     chunk: TranscriptChunk
+    replacePrevious: bool = False
 
 
 class LiveInsightEvent(BaseModel):
@@ -167,6 +179,8 @@ class ClientMessage(BaseModel):
     payload: str | None = None
     image_base64: str | None = None
     mime_type: str | None = None
+    sample_rate_hz: int | None = None
+    channels: int | None = None
     text: str | None = None
     title: str | None = None
     detail: str | None = None

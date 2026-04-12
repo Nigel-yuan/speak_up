@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type { HistoricalSessionSummary } from "@/types/report";
 import type { ScenarioOption, ScenarioType } from "@/types/session";
 import { Card } from "@/components/ui/card";
@@ -77,15 +78,23 @@ function HistoryItem({
         </div>
       </div>
       <p className="mt-3 text-sm leading-6 text-slate-500">{item.summary}</p>
-      <div className="mt-3 flex flex-wrap gap-2">
-        {item.deltas.map((delta) => (
-          <span
-            key={`${item.id}-${delta.metric}`}
-            className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-600"
-          >
-            {delta.metric} {delta.change > 0 ? `+${delta.change}` : delta.change}%
-          </span>
-        ))}
+      <div className="mt-4 flex items-center justify-between gap-3">
+        <div className="flex flex-wrap gap-2">
+          {item.deltas.map((delta) => (
+            <span
+              key={`${item.id}-${delta.metric}`}
+              className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-600"
+            >
+              {delta.metric} {delta.change > 0 ? `+${delta.change}` : delta.change}%
+            </span>
+          ))}
+        </div>
+        <Link
+          href={`/session/${item.id}/replay`}
+          className="text-xs font-semibold text-violet-600 transition hover:text-violet-500"
+        >
+          查看回放
+        </Link>
       </div>
     </div>
   );

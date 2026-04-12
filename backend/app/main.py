@@ -1,5 +1,6 @@
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from app.data.history import HISTORICAL_SESSIONS, get_report_by_scenario
 from app.data.scenarios import SCENARIOS
@@ -16,6 +17,7 @@ from app.schemas import (
     ScenarioOption,
     ScenarioType,
     SessionReport,
+    SessionReplay,
     SessionStreamFrame,
     StartSessionRequest,
 )
@@ -85,11 +87,40 @@ def get_realtime_session(session_id: str) -> RealtimeSession:
 
 
 @app.post("/api/session/{session_id}/finish", response_model=RealtimeSession)
-def finish_session(session_id: str) -> RealtimeSession:
-    session = session_manager.finish_session(session_id)
+async def finish_session(session_id: str) -> RealtimeSession:
+    session = await session_manager.finish_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
     return session.to_schema()
+
+
+@app.get("/api/session/{session_id}/replay", response_model=SessionReplay)
+def get_session_replay(session_id: str) -> SessionReplay:
+    replay = session_manager.get_replay(session_id)
+    if replay is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return SessionReplay.model_validate(replay)
+
+
+@app.get("/api/session/{session_id}/media/audio")
+def get_session_audio(session_id: str) -> FileResponse:
+    replay = session_manager.get_replay(session_id)
+    if replay is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not replay["mediaUrl"]:
+        raise HTTPException(status_code=404, detail="Session audio not found")
+
+    session = session_manager.get_session(session_id)
+    if session is None or not session.debug_enabled:
+        raise HTTPException(status_code=404, detail="Session audio not found")
+
+    audio_dir = session_manager.debug_store._session_dir(session_id) / "audio"
+    for extension in ("webm", "wav", "mp3", "m4a", "ogg"):
+        candidate = audio_dir / f"session_full.{extension}"
+        if candidate.exists():
+            return FileResponse(candidate)
+
+    raise HTTPException(status_code=404, detail="Session audio not found")
 
 
 @app.post("/api/session/{session_id}/debug/full-audio", response_model=DebugAudioUploadResponse)

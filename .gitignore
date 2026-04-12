@@ -30,10 +30,8 @@ backend/debug/
 
 # env files
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env.*
+!.env.example
 
 # system files
 .DS_Store

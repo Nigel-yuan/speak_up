@@ -1,5 +1,5 @@
 import type { HistoricalSessionSummary, SessionReport } from "@/types/report";
-import type { LanguageOption, ScenarioOption, ScenarioType } from "@/types/session";
+import type { LanguageOption, ScenarioOption, ScenarioType, SessionReplay, TranscriptChunk } from "@/types/session";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 
@@ -34,12 +34,7 @@ export function getHistory(scenario?: ScenarioType) {
 
 export interface SessionStreamFrame {
   second: number;
-  transcript: {
-    id: string;
-    speaker: "user" | "coach";
-    text: string;
-    timestampLabel: string;
-  };
+  transcript: TranscriptChunk;
   insight: {
     id: string;
     title: string;
@@ -70,14 +65,8 @@ export interface RealtimeEvent {
   sessionId: string | null;
   text: string | null;
   message: string | null;
-  chunk:
-    | {
-        id: string;
-        speaker: "user" | "coach";
-        text: string;
-        timestampLabel: string;
-      }
-    | null;
+  chunk: TranscriptChunk | null;
+  replacePrevious?: boolean;
   insight:
     | {
         id: string;
@@ -94,6 +83,10 @@ export function getSessionStream(scenario: ScenarioType, language: LanguageOptio
 
 export function getReport(scenario: ScenarioType) {
   return request<SessionReport>(`/api/report?scenario=${scenario}`);
+}
+
+export function getSessionReplay(sessionId: string) {
+  return request<SessionReplay>(`/api/session/${sessionId}/replay`);
 }
 
 export function startRealtimeSession(
@@ -144,6 +137,8 @@ export interface OutboundRealtimeMessage {
   payload?: string;
   image_base64?: string;
   mime_type?: string;
+  sample_rate_hz?: number;
+  channels?: number;
   text?: string;
   title?: string;
   detail?: string;

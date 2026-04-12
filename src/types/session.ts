@@ -16,6 +16,8 @@ export interface TranscriptChunk {
   speaker: "user" | "coach";
   text: string;
   timestampLabel: string;
+  startMs: number;
+  endMs: number;
 }
 
 export interface LiveInsight {
@@ -29,4 +31,13 @@ export interface SessionSetup {
   scenarioId: ScenarioType;
   language: LanguageOption;
   debugEnabled: boolean;
+}
+
+export interface SessionReplay {
+  sessionId: string;
+  scenarioId: ScenarioType;
+  language: LanguageOption;
+  mediaUrl: string | null;
+  mediaType: "audio" | "video" | null;
+  transcript: TranscriptChunk[];
 }

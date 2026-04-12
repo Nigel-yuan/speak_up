@@ -2,510 +2,448 @@
 
 ## 文档目的
 
-这份文档描述的是 `Speak Up` 当前 realtime 训练链路的设计与实现状态，以及后续如何从 mock 原型演进到真实 AI 演讲助手。
+这份文档描述当前仓库里 realtime 训练链路的真实实现状态。
 
-它不是纯 proposal，而是“当前实现 + 后续扩展路线”的组合文档。
+重点回答 4 件事：
 
----
+- 现在系统哪些能力是真的
+- 当前实时链路是怎么跑起来的
+- debug 和 replay 为什么这样设计
+- 后面应该按什么顺序扩展
 
-## 当前目标
+## 当前状态总览
 
-当前版本的重点不是“真实 ASR 和真实视觉分析已经上线”，而是先把这些核心链路打通：
+### 已落地
 
-- session 生命周期
-- WebSocket 实时通道
-- 音频 chunk / 视频帧上行
-- transcript / insight 实时回推
-- 结束后进入报告页
-- 可选 debug dump
-
-也就是说，当前版本解决的是“产品骨架”和“协议骨架”，为后面替换真实能力留接口。
-
----
-
-## 当前实现状态
-
-截至当前版本，已经实现：
-
-- `POST /api/session/start`
-- `GET /api/session/{session_id}`
-- `POST /api/session/{session_id}/finish`
-- `WS /ws/session/{session_id}`
-- `POST /api/session/{session_id}/debug/full-audio`
-- 音频 chunk 上行
-- 视频帧上行
-- mock transcript partial / final 回推
-- mock live insight 回推
-- 静态 report / history 页面
+- session 创建、查询、结束
+- 浏览器到后端的 WebSocket realtime 通道
+- 浏览器麦克风 `PCM 16k mono` 实时上行
+- 阿里云 `qwen3-asr-flash-realtime`
+- 实时 `transcript_partial` / `transcript_final`
+- transcript 时间轴
 - debug 开关
-  - 默认关闭
-  - 关闭时不写 debug 文件
-  - 打开时保存 chunk、帧、事件日志和 `session_full.webm`
+- debug 模式下的 `session_full.webm`
+- 基于 transcript 的 replay 页面
 
-当前还没有实现：
+### 仍然是 mock 或静态数据
 
-- 真实 STT
-- 真实视觉分析
-- 真实报告生成
-- session / report 持久化
+- `live_insight`
+- `GET /api/report`
+- `GET /api/history`
+- 视觉分析
+- 语音播报
+- session 持久化
 
----
+一句话总结：
 
-## 总体架构
+当前系统已经完成“真实实时转写”这条主链路，但分析、报告和历史仍然是原型层实现。
+
+## 当前架构
 
 ```mermaid
 flowchart LR
-    A[Browser Frontend\nNext.js UI] -->|POST /api/session/start| B[Session API]
-    A <-->|WS /ws/session/:session_id| C[Realtime Gateway]
-    A -->|POST full audio on pause or finish\nwhen debug is enabled| D[Debug Audio API]
+    A[Browser Frontend] -->|start session| B[FastAPI API]
+    A <-->|session channel| C[Realtime Gateway]
+    A -->|upload full audio| D[Debug Audio Upload]
 
-    C --> E[Session Manager]
-    B --> E
+    B --> E[Session Manager]
+    C --> E
     D --> E
 
-    E --> F[Mock STT Service]
+    E --> F[Aliyun Realtime ASR]
     E --> G[Mock Vision Service]
     E --> H[Mock Coaching Service]
-    E --> I[(Mock History / Report Data)]
+    E --> I[(Static Report and History Data)]
     E --> J[(Optional Debug Store)]
 ```
 
-### 两条主链路
+## 运行时链路
 
-#### 1. 控制面
+### 1. 创建 session
 
-负责：
+前端调用：
 
-- 创建 session
-- 查询 session
-- 结束 session
-- 获取场景 / 历史 / 报告
+- `POST /api/session/start`
 
-#### 2. 实时面
+后端返回：
 
-负责：
+- `sessionId`
+- `websocketUrl`
+- 当前 session 元信息
 
-- 音频 chunk 上行
-- 视频帧上行
-- transcript / insight 回推
-- status 广播
+这一步只创建 session，不会立刻开始实时识别。
 
----
+### 2. 建立 WebSocket
 
-## 为什么不用整段视频直传
+前端连接：
 
-在浏览器实时训练场景里，整段视频直传后端不是一个好的第一阶段方案，原因包括：
+- `WS /ws/session/:session_id`
 
-- 带宽压力大
-- 延迟不可控
-- 服务端解码成本高
-- 不利于快速替换 STT / vision / coaching
+连接建立后，后端先推一条 `session_status`，前端再发送：
 
-所以当前架构刻意拆成：
+- `start_stream`
 
-- 音频：持续切块上传
-- 视频：低频抽帧上传
-- 后端：聚合成实时反馈
-- 结束后：按需要生成完整报告
+### 3. 启动实时 ASR
 
-这也是后续接真实 STT 和视觉分析最稳的演进路径。
+`start_stream` 到达后，`SessionManager` 会：
 
----
+- 为当前 session 建立阿里云 realtime 连接
+- 发送 `session.update`
+- 使用 `server_vad`
+- 开始接收 provider partial / final
 
-## Session 生命周期
+阿里云 provider 当前由 [stt_service.py](/Users/bytedance/my_project/speak_up/backend/app/services/stt_service.py) 管理。
 
-### 1. Start
+### 4. 音频上行
 
-前端点击开始后：
+前端在 [useMockSession.ts](/Users/bytedance/my_project/speak_up/src/hooks/useMockSession.ts) 里通过 `AudioWorklet` 采集麦克风，并把音频转成：
 
-1. `POST /api/session/start`
-2. 返回 `sessionId` 与 `websocketUrl`
-3. 浏览器建立 WebSocket
-4. 浏览器发送 `start_stream`
-5. 开始采集麦克风
-6. 开始按固定周期发送视频帧
+- `audio/pcm`
+- `16000 Hz`
+- `mono`
 
-### 2. Running
-
-运行中：
-
-- 音频 chunk 持续发送到后端
-- 视频帧持续发送到后端
-- 后端按 mock timeline 推送 transcript / insight
-
-### 3. Pause
-
-点击暂停后：
-
-- 前端停止录音
-- 等最后一个 chunk flush 完成
-- 如果 `debugEnabled=true`
-  - 前端把完整录音 blob 上传到后端
-  - 后端保存为 `session_full.webm`
-- 当前 pause 主要是前端层面的录音暂停，不是单独的后端 pause 状态
-
-### 4. Finish
-
-点击结束并生成报告后：
-
-- 前端先 finalize 当前完整录音
-- 如果 `debugEnabled=true`
-  - 上传 `session_full.webm`
-- 然后调用 `POST /api/session/{session_id}/finish`
-- 跳转报告页
-
-### 5. Reset
-
-点击重置后：
-
-- 清空前端当前 session 视图
-- 关闭 socket
-- 停止录音
-- 不生成报告
-
----
-
-## WebSocket 协议
-
-### 前端 -> 后端
-
-#### `ping`
-
-```json
-{ "type": "ping" }
-```
-
-#### `start_stream`
-
-```json
-{ "type": "start_stream" }
-```
-
-#### `audio_chunk`
+前端上行消息：
 
 ```json
 {
   "type": "audio_chunk",
-  "timestamp_ms": 1200,
-  "payload": "<data-url-base64>",
-  "mime_type": "audio/webm;codecs=opus"
+  "timestamp_ms": 1710000000000,
+  "payload": "<base64-pcm-bytes>",
+  "mime_type": "audio/pcm",
+  "sample_rate_hz": 16000,
+  "channels": 1
 }
 ```
 
-#### `video_frame`
+后端收到后直接转发给阿里云：
 
-```json
-{
-  "type": "video_frame",
-  "timestamp_ms": 1400,
-  "image_base64": "data:image/jpeg;base64,..."
-}
-```
+- `input_audio_buffer.append`
 
-#### 手动注入调试消息
+### 5. transcript 回推
 
-```json
-{ "type": "inject_partial", "text": "..." }
-```
+阿里云返回的关键事件有：
 
-```json
-{
-  "type": "inject_transcript",
-  "text": "...",
-  "timestamp_label": "00:12"
-}
-```
+- `conversation.item.input_audio_transcription.text`
+- `conversation.item.input_audio_transcription.completed`
+- `input_audio_buffer.speech_started`
+- `input_audio_buffer.speech_stopped`
 
-```json
-{
-  "type": "inject_insight",
-  "title": "...",
-  "detail": "...",
-  "tone": "positive"
-}
-```
+后端映射为前端事件：
 
-### 后端 -> 前端
-
-#### `session_status`
-
-```json
-{
-  "type": "session_status",
-  "sessionId": "session-123",
-  "status": "streaming"
-}
-```
-
-#### `transcript_partial`
-
-```json
-{
-  "type": "transcript_partial",
-  "text": "大家晚上好，欢迎来到..."
-}
-```
-
-#### `transcript_final`
-
-```json
-{
-  "type": "transcript_final",
-  "chunk": {
-    "id": "tx-12",
-    "speaker": "user",
-    "text": "大家晚上好，欢迎来到今天的活动现场。",
-    "timestampLabel": "00:12"
-  }
-}
-```
-
-#### `live_insight`
-
-```json
-{
-  "type": "live_insight",
-  "insight": {
-    "id": "ins-5",
-    "title": "眼神交流稳定",
-    "detail": "你刚刚的镜头注视更自然，表达可信度更高。",
-    "tone": "positive"
-  }
-}
-```
-
-#### 其他事件
-
-- `ack`
+- `transcript_partial`
+- `transcript_final`
 - `error`
+
+时间戳优先使用阿里云返回的 `speech_started / speech_stopped`，如果 provider 没给，再退回本地 elapsed time 兜底。
+
+### 6. 结束 session
+
+前端点击结束时：
+
+1. 先收尾本地录音
+2. 上传 `session_full.webm`
+3. 调用 `POST /api/session/{session_id}/finish`
+
+后端会：
+
+- 给阿里云发送 `session.finish`
+- 等待 `session.finished`
+- 广播 `session_status=finished`
+
+## 双音频链路设计
+
+这是当前架构里最关键的设计决定。
+
+### 主链路
+
+主链路只服务于实时识别：
+
+- 输入：麦克风
+- 编码：PCM 16k mono
+- 用途：低延迟 ASR
+- 落盘：debug 模式下保存为 `audio_000x.pcm`
+
+### debug 链路
+
+debug 链路只服务于回放和排障：
+
+- 输入：同一个麦克风流
+- 编码：浏览器 `MediaRecorder`
+- 用途：生成完整可播放录音
+- 落盘：`session_full.webm`
+
+### 为什么不让后端拼 chunk
+
+因为 `MediaRecorder` 的 timeslice 分片不等价于“每片都是独立完整的可播放 WebM 文件”。如果把这些 chunk 当完整媒体去拼，会遇到容器头、可播放性和浏览器兼容问题。
+
+所以当前实现选择：
+
+- 实时识别走 PCM
+- 回放走完整 WebM
+
+这样实时链路和调试链路各自稳定。
+
+## transcript 处理策略
+
+### 句子边界
+
+当前句子边界主要信任 provider：
+
+- 阿里云 `server_vad` 负责断句
+- 默认 `ALIYUN_REALTIME_ASR_SILENCE_DURATION_MS=1200`
+
+这意味着：
+
+- 实时字幕切句主要由阿里云控制
+- 前端不再做复杂的人为断句推断
+
+### 当前唯一保留的应用层补偿
+
+后端只保留一条窄规则：
+
+- 如果某条 final transcript 只是 `嗯 / 哦 / 诶 / 哎 / 唉` 这类语气词尾巴
+- 并且说话人和上一条一致
+- 则把它并回上一条 transcript
+
+对应实现见 [session_manager.py](/Users/bytedance/my_project/speak_up/backend/app/services/session_manager.py)。
+
+这条规则存在的原因很简单：
+
+- provider 偶尔会把尾部语气词单独切成一条 final
+- 直接展示会让 transcript 可读性变差
+
+除此之外，当前不会再做人为的长文本重叠合并。
+
+## debug 与 replay
+
+### debug 开关
+
+`debugEnabled=false` 时：
+
+- 实时 ASR 仍然正常工作
+- 视频帧仍然会上行
+- 后端不写 debug 文件
+
+`debugEnabled=true` 时：
+
+- 记录 `metadata.json`
+- 记录 `events.jsonl`
+- 记录 provider 事件
+- 保存 `audio_000x.pcm`
+- 保存 `frame_000x.jpg`
+- 在 pause / finish 时保存 `session_full.webm`
+
+### debug 目录
+
+```text
+backend/debug/<session_id>/
+  metadata.json
+  events.jsonl
+  audio/
+    audio_0001.pcm
+    audio_0002.pcm
+    ...
+    session_full.webm
+  frames/
+    frame_0001.jpg
+    frame_0002.jpg
+    ...
+```
+
+### replay 数据来源
+
+当前 replay 页面依赖：
+
+- session 内存里的 `transcript_chunks`
+- debug 模式下的 `session_full.webm`
+
+后端接口：
+
+- `GET /api/session/{session_id}/replay`
+- `GET /api/session/{session_id}/media/audio`
+
+注意：
+
+- 如果 session 不存在，前端 replay 页面当前会退回 demo 数据
+- 这说明 replay UI 是可用的，但持久化还没有完成
+
+## 当前协议
+
+### REST
+
+核心接口：
+
+- `GET /health`
+- `GET /api/scenarios`
+- `POST /api/session/start`
+- `GET /api/session/{session_id}`
+- `POST /api/session/{session_id}/finish`
+- `GET /api/session/{session_id}/replay`
+- `GET /api/session/{session_id}/media/audio`
+- `POST /api/session/{session_id}/debug/full-audio`
+
+原型接口：
+
+- `GET /api/history`
+- `GET /api/report`
+- `GET /api/session-stream`
+- `POST /api/session/{session_id}/inject-transcript`
+- `POST /api/session/{session_id}/inject-insight`
+
+### WebSocket
+
+前端发送：
+
+- `ping`
+- `start_stream`
+- `audio_chunk`
+- `video_frame`
+- `inject_partial`
+- `inject_transcript`
+- `inject_insight`
+
+后端回推：
+
+- `session_status`
+- `transcript_partial`
+- `transcript_final`
+- `live_insight`
+- `ack`
 - `pong`
+- `error`
 
----
+## 关键模块职责
 
-## 当前后端模块职责
-
-### `main.py`
+### [main.py](/Users/bytedance/my_project/speak_up/backend/app/main.py)
 
 负责：
 
-- 定义 REST 路由
-- 定义 WebSocket 路由
-- 连接 `SessionManager`
+- FastAPI 路由
+- WebSocket 入口
+- replay 媒体下载
+- debug 完整录音上传接口
 
-### `session_manager.py`
+### [session_manager.py](/Users/bytedance/my_project/speak_up/backend/app/services/session_manager.py)
 
-这是当前 realtime 核心聚合层，负责：
+负责：
 
-- session 创建 / 查询 / 结束
-- socket 连接管理
-- 接收 client message
-- 广播 status / transcript / insight
-- 决定是否写 debug
+- session 生命周期
+- socket 管理
+- 把前端音频转发给 provider
+- 把 provider transcript 广播给前端
+- 维护 session 内存态 transcript
+- debug 落盘
 
-### `debug_store.py`
+### [stt_service.py](/Users/bytedance/my_project/speak_up/backend/app/services/stt_service.py)
 
-只在 `debugEnabled=true` 时参与工作，负责：
+负责：
 
-- 初始化 `backend/debug/<session_id>/`
-- 保存 `metadata.json`
-- 追加 `events.jsonl`
-- 保存 `audio_000x.webm`
-- 保存 `frame_000x.jpg`
-- 保存 `session_full.webm`
+- 管理阿里云 realtime 连接
+- 发送 `session.update`
+- 转发 `input_audio_buffer.append`
+- 接收并解析 provider 事件
+- 暴露 partial / final / error 回调
 
-### `stt_service.py`
+### [debug_store.py](/Users/bytedance/my_project/speak_up/backend/app/services/debug_store.py)
 
-当前只是 mock：
+负责：
 
-- 接收音频 chunk 数量
-- 生成简单 ack
-- 生成 partial text 截断文本
+- session debug 目录初始化
+- 保存音频 chunk
+- 保存完整录音
+- 保存视频帧
+- 保存 provider 事件和 transcript merge 事件
 
-未来这里应该替换成真实 STT provider 封装层。
+## 当前配置项
 
-### `vision_service.py`
+后端当前依赖这些环境变量：
 
-当前只是 mock：
+```bash
+DASHSCOPE_API_KEY=your_key
+ALIYUN_REALTIME_ASR_MODEL=qwen3-asr-flash-realtime
+ALIYUN_REALTIME_ASR_URL=wss://dashscope.aliyuncs.com/api-ws/v1/realtime
+ALIYUN_REALTIME_ASR_VAD_THRESHOLD=0.0
+ALIYUN_REALTIME_ASR_SILENCE_DURATION_MS=1200
+```
 
-- 接收视频帧计数
-- 返回简单 ack
+其中：
 
-未来这里应该替换成真实视觉分析层。
-
-### `coaching_service.py`
-
-当前也是 mock：
-
-- 把 insight 数据包装成标准事件
-
-未来这里应该承担 transcript + vision 的融合反馈逻辑。
-
----
-
-## Debug 架构说明
-
-### Debug 开关
-
-每个 session 都有 `debugEnabled`：
-
-- 默认 `false`
-- 关闭时：
-  - 仍然正常请求麦克风
-  - 仍然正常发送音频 chunk
-  - 仍然正常发送视频帧
-  - 只是后端不写 debug 文件
-- 打开时：
-  - 后端初始化 debug session 目录
-  - 写入 events / audio chunk / frames
-  - 暂停或结束时保存完整录音
-
-### 为什么 `session_full.webm` 由前端 finalize
-
-这是当前 debug 设计里的一个关键决策。
-
-浏览器 `MediaRecorder.start(timeslice)` 产生的是连续录音流的分段。后续分片通常不适合被当成“独立可播放文件”使用，所以不能指望服务端简单拼 `audio_0001.webm + audio_0002.webm + ...` 来得到稳定可播的文件。
-
-因此当前策略是：
-
-- 实时上行时继续发送 chunk，保持实时链路
-- 前端额外缓存完整录音 blob
-- 在暂停或结束时上传完整 blob
-- 后端直接保存为 `session_full.webm`
-
-这比服务端 remux 分片更稳定，也更适合当前原型阶段。
-
----
-
-## 当前实现与最初方案的差异
-
-最初的架构目标是先完成 Phase 1 假实时，再逐步替换真实服务。当前已经比最早的 Phase 1 多做了一步：
-
-- 增加了完整 debug 录音导出能力
-- 增加了可控的 debug 开关
-
-但仍然没有越过这些边界：
-
-- transcript 仍然不是由真实音频识别得到
-- insight 仍然不是由真实视觉分析和 coaching 生成
-- report 仍然不是由真实 session 汇总生成
-
----
+- `DASHSCOPE_API_KEY` 必填
+- `ALIYUN_REALTIME_ASR_SILENCE_DURATION_MS` 越大，断句越慢，最终句稳定性通常越高
 
 ## 当前限制
 
-- session 只存在于后端内存中
-- 后端重启后 session 状态会丢失
-- `history.py` 和 `report` 仍然是静态模板
-- debug 文件保存在本地磁盘，不适合生产环境
-- pause 目前更偏“前端录音暂停”，没有独立后端 pause 状态机
+- `live_insight` 还不是真实分析结果
+- `GET /api/report` 仍然返回静态模板
+- `GET /api/history` 仍然返回静态历史数据
+- session 没有落库，后端重启后 replay 会丢
+- 当前只支持音频回放，不支持真实视频回放
+- transcript 结构仍然比较轻，暂时没有把 `emotion / language / item_id` 暴露到上层 schema
 
----
+## 后续路线
 
-## 后续演进路线
+### Phase 2：真实视觉分析
 
-## Phase 2：接入真实 STT
+目标：
 
-### 目标
+- 让 `video_frame` 真正进入模型
+- 用真实视觉信号替换 mock insight
 
-把 `audio_chunk` 接到真实 ASR，生成 partial / final transcript。
+建议做法：
 
-### 怎么做
+- 接阿里云多模态实时能力
+- 保持低频关键帧策略
+- 由后端统一聚合 transcript 和视觉信号
 
-- 保留当前 `audio_chunk` 协议
-- 在 `stt_service.py` 抽象真实 provider
-- 让 `SessionManager` 不再只读 mock `session_stream`
-- 按 provider 回调广播：
-  - `transcript_partial`
-  - `transcript_final`
+### Phase 3：语音播报
 
-### 推荐 provider
+目标：
 
-- OpenAI Realtime
-- Deepgram
-- AssemblyAI
-- 自托管时可考虑 `faster-whisper`
+- 让教练反馈可实时播报
 
----
+建议做法：
 
-## Phase 3：接入真实视频帧分析
+- 接入 TTS 或 Omni 语音输出
+- 增加前端播放队列
+- 处理打断、暂停和多段音频拼接
 
-### 目标
+### Phase 4：真实报告和历史
 
-让 live insight 能基于真实镜头状态工作。
+目标：
 
-### 怎么做
+- 基于真实 session 生成报告
+- 用真实训练记录替换静态历史
 
-- 保留当前 `video_frame` 协议
-- 在 `vision_service.py` 里分析：
-  - gaze
-  - head pose
-  - face presence
-  - expression / motion
-- 把视觉结果交给 `coaching_service.py`
+建议做法：
 
-### 推荐落地
+- 持久化 transcript、insight、评分和回放地址
+- 引入数据库和对象存储
+- report 生成从“按场景模板”改成“按 session 计算”
 
-- 原型阶段优先 OpenCV / MediaPipe
-- 后续再考虑更重的多模态模型
+### Phase 5：生产化
 
----
+目标：
 
-## Phase 4：结束后生成真实报告
+- 从本地原型演进成可部署系统
 
-### 目标
+建议做法：
 
-把报告从场景模板升级成 session 级真实报告。
+- 用户体系
+- 鉴权
+- 异步任务
+- 对象存储
+- 监控与清理策略
 
-### 怎么做
+## 当前判断
 
-- 汇总：
-  - transcript 全量文本
-  - insight 时间轴
-  - 视觉统计
-  - debug metadata
-- 增加 report generation service
-- `GET /api/report` 支持按 session 查询
+这版架构最核心的变化已经完成：
 
-### 推荐策略
+- realtime 主链路从 mock transcript 变成了真实阿里云 ASR
+- debug 和 replay 没被这次接入破坏
 
-- 原型先同步生成
-- 生产再改为异步生成 + 持久化
+接下来不该再回头重做音频底座，而应该基于这条已跑通的链路继续往上接：
 
----
-
-## Phase 5：持久化与多用户化
-
-### 目标
-
-从单机原型演进成可多人使用的系统。
-
-### 怎么做
-
-- 给 session / report / history 增加数据库持久化
-- 给 debug 文件接对象存储
-- 增加 auth 与 user 维度隔离
-- 把内存态 session manager 升级为可恢复设计
-
----
-
-## 推荐落地顺序
-
-1. 先把真实 STT 接进 `stt_service.py`
-2. 再把真实 vision 接进 `vision_service.py`
-3. 再做 report generation 和历史持久化
-4. 最后做 auth、对象存储、任务系统和多用户化
-
----
-
-## 当前结论
-
-当前 `Speak Up` 的 realtime 架构已经完成了最重要的骨架：
-
-- 前后端 session 生命周期
-- WebSocket 实时协议
-- 音频 chunk / 视频帧上行
-- transcript / insight 回推
-- 可控 debug dump
-- 完整录音导出
-
-接下来真正的工作重点，不是再改基础协议，而是把 mock 的 `stt / vision / report` 一个个替换成真实能力。
+1. 真实视觉分析
+2. 真实报告和历史
+3. 语音播报
+4. 持久化和生产化能力

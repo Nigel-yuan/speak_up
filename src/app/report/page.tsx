@@ -8,13 +8,13 @@ import { HistoryComparison } from "@/components/report/history-comparison";
 import { ReportRadarChart } from "@/components/report/report-radar-chart";
 import { ReportSuggestions } from "@/components/report/report-suggestions";
 import { ReportSummary } from "@/components/report/report-summary";
-import { useSessionResult } from "@/components/session/session-provider";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { useSessionResult } from "@/components/session/session-provider";
 
 export default function ReportPage() {
   const router = useRouter();
-  const { history, report, reportLoading, setup } = useSessionResult();
+  const { history, replaySessionId, report, reportLoading, setup, transcript } = useSessionResult();
 
   useEffect(() => {
     if (!reportLoading && !report && !setup) {
@@ -63,6 +63,40 @@ export default function ReportPage() {
 
       <div className="space-y-6">
         <ReportSummary report={report} />
+
+        <Card className="border-violet-100 bg-gradient-to-br from-violet-50 via-white to-slate-50 p-6">
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-violet-600">Session Replay</p>
+              <h3 className="mt-1 text-xl font-semibold text-slate-950">带着证据回看这次练习</h3>
+              <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-600">
+                回放页会同步展示媒体与完整文字稿，方便你定位具体时刻，结合建议做针对性复盘。
+              </p>
+            </div>
+            <div className="flex flex-col items-start gap-3 md:items-end">
+              <div className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-500 shadow-sm">
+                {transcript.length} 段文字稿
+              </div>
+              {replaySessionId ? (
+                <Button
+                  className="bg-slate-950 text-white shadow-[0_12px_24px_rgba(15,23,42,0.16)] hover:bg-slate-800"
+                  onClick={() => router.push(`/session/${replaySessionId}/replay`)}
+                  type="button"
+                >
+                  查看回放
+                </Button>
+              ) : (
+                <Button
+                  className="bg-slate-950 text-white shadow-[0_12px_24px_rgba(15,23,42,0.16)] hover:bg-slate-800"
+                  onClick={() => router.push("/session/demo-replay/replay")}
+                  type="button"
+                >
+                  查看回放
+                </Button>
+              )}
+            </div>
+          </div>
+        </Card>
 
         <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
           <ReportRadarChart metrics={report.radarMetrics} />

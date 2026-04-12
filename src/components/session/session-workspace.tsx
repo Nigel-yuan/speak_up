@@ -83,14 +83,15 @@ export function SessionWorkspace({
 
   const session = useMockSession({ scenarioId, language, debugEnabled });
   const {
+    activeTranscript,
     currentInsight,
     elapsedSeconds,
     error,
     finish,
+    flushTranscript,
     insights,
     isLoading,
     isRunning,
-    partialTranscript,
     pause,
     registerVideoFrameProvider,
     reset,
@@ -109,8 +110,10 @@ export function SessionWorkspace({
 
   const finishSession = async () => {
     try {
+      const finishedSessionId = sessionId;
+      const { active, committed } = flushTranscript();
       await finish();
-      await saveResult({ scenarioId, language, debugEnabled });
+      await saveResult({ scenarioId, language, debugEnabled }, active ? [...committed, active] : committed, finishedSessionId);
       router.push("/report");
     } catch {
       return;
@@ -197,7 +200,7 @@ export function SessionWorkspace({
 
         <aside className="flex min-h-0 flex-col gap-3 pt-[52px]">
           <div className="min-h-0 flex-[1.05]">
-            <TranscriptPanel partialTranscript={partialTranscript} transcript={transcript} />
+            <TranscriptPanel activeTranscript={activeTranscript} transcript={transcript} />
           </div>
           <div className="min-h-0 flex-1">
             <LiveAnalysisPanel currentInsight={currentInsight} insights={insights} />

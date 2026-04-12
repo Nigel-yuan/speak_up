@@ -1,5 +1,5 @@
 import type { HistoricalSessionSummary, SessionReport } from "@/types/report";
-import type { LanguageOption, ScenarioOption, ScenarioType, SessionReplay, TranscriptChunk } from "@/types/session";
+import type { LanguageOption, PoseDebugState, PoseSnapshot, ScenarioOption, ScenarioType, SessionReplay, TranscriptChunk } from "@/types/session";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 
@@ -75,6 +75,7 @@ export interface RealtimeEvent {
         tone: "positive" | "neutral" | "warning";
       }
     | null;
+  poseDebug?: PoseDebugState | null;
 }
 
 export function getSessionStream(scenario: ScenarioType, language: LanguageOption) {
@@ -130,6 +131,7 @@ export interface OutboundRealtimeMessage {
     | "start_stream"
     | "audio_chunk"
     | "video_frame"
+    | "pose_snapshot"
     | "inject_partial"
     | "inject_transcript"
     | "inject_insight";
@@ -144,4 +146,5 @@ export interface OutboundRealtimeMessage {
   detail?: string;
   tone?: "positive" | "neutral" | "warning";
   timestamp_label?: string;
+  pose_snapshot?: PoseSnapshot;
 }

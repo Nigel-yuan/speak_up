@@ -17,7 +17,9 @@ from app.schemas import (
     InjectTranscriptRequest,
     LiveInsight,
     LiveInsightEvent,
+    PoseDebugEvent,
     PongEvent,
+    PoseSnapshot,
     RealtimeSession,
     RealtimeStatusEvent,
     ScenarioType,
@@ -30,7 +32,7 @@ from app.schemas import (
 from app.services.coaching_service import MockCoachingService
 from app.services.debug_store import DebugStore
 from app.services.stt_service import ProviderTranscriptResult, build_stt_service
-from app.services.vision_service import MockVisionService
+from app.services.vision_service import PostureVisionService
 
 
 @dataclass
@@ -72,7 +74,7 @@ class SessionManager:
     def __init__(self) -> None:
         self.sessions: dict[str, SessionRecord] = {}
         self.stt_service = build_stt_service()
-        self.vision_service = MockVisionService()
+        self.vision_service = PostureVisionService()
         self.coaching_service = MockCoachingService()
         self.debug_store = DebugStore(Path(__file__).resolve().parents[2] / "debug")
 
@@ -119,6 +121,7 @@ class SessionManager:
 
         session.status = "finished"
         session.stream_task = None
+        self.vision_service.close_session(session_id)
         if session.debug_enabled:
             self.debug_store.append_event(session_id, {"type": "session_finished", "status": session.status})
         await self.broadcast_status(session)
@@ -176,6 +179,7 @@ class SessionManager:
             session.sockets.remove(websocket)
         if not session.sockets:
             session.stream_task = None
+            self.vision_service.close_session(session.session_id)
             asyncio.create_task(self.stt_service.close_session(session.session_id))
 
     @staticmethod
@@ -202,7 +206,13 @@ class SessionManager:
 
     async def handle_client_message(self, session: SessionRecord, message: ClientMessage, websocket: WebSocket) -> None:
         if self._is_debug_enabled(session):
-            self.debug_store.append_event(session.session_id, {"type": "client_message", **message.model_dump(exclude={"payload", "image_base64"})})
+            self.debug_store.append_event(
+                session.session_id,
+                {
+                    "type": "client_message",
+                    **message.model_dump(exclude={"payload", "image_base64", "pose_snapshot"}),
+                },
+            )
 
         if message.type == "ping":
             await websocket.send_json(PongEvent().model_dump())
@@ -262,6 +272,10 @@ class SessionManager:
             await websocket.send_json(
                 AckEvent(message=ack_message).model_dump()
             )
+            return
+
+        if message.type == "pose_snapshot" and message.pose_snapshot:
+            await self._handle_pose_snapshot(session, message.pose_snapshot)
             return
 
         if message.type == "inject_partial" and message.text:
@@ -378,6 +392,21 @@ class SessionManager:
                 session.session_id,
                 {"type": "provider_error", "provider": "aliyun-qwen-asr", "message": message},
             )
+
+    async def _handle_pose_snapshot(self, session: SessionRecord, snapshot: PoseSnapshot) -> None:
+        insight, pose_debug = self.vision_service.process_pose_snapshot(session.session_id, session.language, snapshot)
+        if self._is_debug_enabled(session):
+            self.debug_store.append_event(
+                session.session_id,
+                {
+                    "type": "pose_snapshot_received",
+                    "snapshot": snapshot.model_dump(),
+                    "poseDebug": pose_debug.model_dump(),
+                },
+            )
+        await self._broadcast(session, PoseDebugEvent(poseDebug=pose_debug).model_dump())
+        if insight is not None:
+            await self.broadcast_insight(session, insight, source="pose-vision")
 
     async def _broadcast(self, session: SessionRecord, payload: dict) -> None:
         stale: list[WebSocket] = []

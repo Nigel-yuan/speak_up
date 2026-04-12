@@ -10,10 +10,12 @@ interface SessionToolbarProps {
   debugToggleDisabled?: boolean;
   language: LanguageOption;
   onDebugToggle: () => void;
+  onPoseDebugToggle: () => void;
   onHistoryToggle: () => void;
   onLanguageChange: (language: LanguageOption) => void;
   onScenarioChange: (scenario: ScenarioType) => void;
   onScenarioToggle: () => void;
+  poseDebugEnabled: boolean;
   scenario: ScenarioType;
   scenarioOpen: boolean;
   scenarios: ScenarioOption[];
@@ -24,10 +26,12 @@ export function SessionToolbar({
   debugToggleDisabled = false,
   language,
   onDebugToggle,
+  onPoseDebugToggle,
   onHistoryToggle,
   onLanguageChange,
   onScenarioChange,
   onScenarioToggle,
+  poseDebugEnabled,
   scenario,
   scenarioOpen,
   scenarios,
@@ -61,6 +65,17 @@ export function SessionToolbar({
         }`}
       >
         Debug Dump · {debugEnabled ? "开" : "关"}
+      </button>
+      <button
+        type="button"
+        onClick={onPoseDebugToggle}
+        className={`rounded-full border px-4 py-2 text-sm font-semibold shadow-[0_10px_25px_rgba(15,23,42,0.06)] transition ${
+          poseDebugEnabled
+            ? "border-sky-200 bg-sky-50 text-sky-900 hover:bg-sky-100"
+            : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50"
+        }`}
+      >
+        Pose Debug · {poseDebugEnabled ? "开" : "关"}
       </button>
 
       {scenarioOpen ? (

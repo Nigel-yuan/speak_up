@@ -26,6 +26,7 @@ export function SessionWorkspace({
   const router = useRouter();
   const { error: sessionError, history, saveResult } = useSessionResult();
   const [debugEnabled, setDebugEnabled] = useState(false);
+  const [poseDebugEnabled, setPoseDebugEnabled] = useState(false);
   const [language, setLanguage] = useState<LanguageOption>(defaultLanguage);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [scenarioOpen, setScenarioOpen] = useState(false);
@@ -93,12 +94,17 @@ export function SessionWorkspace({
     isLoading,
     isRunning,
     pause,
+    poseDebug,
+    poseSnapshotCount,
+    registerPoseSnapshotProvider,
     registerVideoFrameProvider,
     reset,
     sessionId,
     start,
     statusText,
     transcript,
+    latestPoseSnapshot,
+    lastPoseSnapshotAt,
   } = session;
 
   const closeHistory = () => setHistoryOpen(false);
@@ -160,10 +166,12 @@ export function SessionWorkspace({
             debugToggleDisabled={isRunning || isLoading}
             language={language}
             onDebugToggle={() => setDebugEnabled((value) => !value)}
+            onPoseDebugToggle={() => setPoseDebugEnabled((value) => !value)}
             onHistoryToggle={() => setHistoryOpen((value) => !value)}
             onLanguageChange={setLanguage}
             onScenarioChange={setSelectedScenarioId}
             onScenarioToggle={() => setScenarioOpen((value) => !value)}
+            poseDebugEnabled={poseDebugEnabled}
             scenario={scenarioId}
             scenarioOpen={scenarioOpen}
             scenarios={scenarios}
@@ -172,7 +180,10 @@ export function SessionWorkspace({
             <CameraPanel
               elapsedSeconds={elapsedSeconds}
               isRunning={isRunning && !controlsDisabled}
+              latestPoseSnapshot={latestPoseSnapshot}
+              onPoseSnapshotReady={registerPoseSnapshotProvider}
               onFrameCaptureReady={registerVideoFrameProvider}
+              poseDebugEnabled={poseDebugEnabled}
             >
               <div className="space-y-2">
                 {statusMessage ? (
@@ -203,7 +214,15 @@ export function SessionWorkspace({
             <TranscriptPanel activeTranscript={activeTranscript} transcript={transcript} />
           </div>
           <div className="min-h-0 flex-1">
-            <LiveAnalysisPanel currentInsight={currentInsight} insights={insights} />
+            <LiveAnalysisPanel
+              currentInsight={currentInsight}
+              insights={insights}
+              lastPoseSnapshotAt={lastPoseSnapshotAt}
+              latestPoseSnapshot={latestPoseSnapshot}
+              poseDebug={poseDebug}
+              poseDebugEnabled={poseDebugEnabled}
+              poseSnapshotCount={poseSnapshotCount}
+            />
           </div>
         </aside>
       </div>

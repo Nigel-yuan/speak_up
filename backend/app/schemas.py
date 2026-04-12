@@ -13,6 +13,7 @@ RealtimeEventType = Literal[
     "transcript_partial",
     "transcript_final",
     "live_insight",
+    "pose_debug",
     "pong",
     "ack",
     "error",
@@ -22,6 +23,7 @@ ClientMessageType = Literal[
     "start_stream",
     "audio_chunk",
     "video_frame",
+    "pose_snapshot",
     "inject_partial",
     "inject_transcript",
     "inject_insight",
@@ -52,6 +54,39 @@ class LiveInsight(BaseModel):
     title: str
     detail: str
     tone: InsightTone
+
+
+class PoseSnapshot(BaseModel):
+    bodyPresent: bool
+    faceVisible: bool
+    handsVisible: bool
+    shoulderVisible: bool
+    hipVisible: bool
+    bodyScale: float
+    centerOffsetX: float
+    shoulderTiltDeg: float
+    torsoTiltDeg: float
+    gestureActivity: float
+    stabilityScore: float
+
+
+class PoseDebugState(BaseModel):
+    snapshotCount: int
+    closeUpMode: bool
+    selectedRuleKey: str | None = None
+    selectedRuleTitle: str | None = None
+    selectedRuleTone: InsightTone | None = None
+    bodyPresenceRatio: float
+    faceVisibilityRatio: float
+    handsVisibilityRatio: float
+    shoulderVisibilityRatio: float
+    hipVisibilityRatio: float
+    averageBodyScale: float
+    averageCenterOffsetX: float
+    averageShoulderTiltDeg: float
+    averageTorsoTiltDeg: float
+    averageGestureActivity: float
+    averageStabilityScore: float
 
 
 class SessionSetup(BaseModel):
@@ -159,6 +194,11 @@ class LiveInsightEvent(BaseModel):
     insight: LiveInsight
 
 
+class PoseDebugEvent(BaseModel):
+    type: Literal["pose_debug"] = "pose_debug"
+    poseDebug: PoseDebugState
+
+
 class PongEvent(BaseModel):
     type: Literal["pong"] = "pong"
 
@@ -186,6 +226,7 @@ class ClientMessage(BaseModel):
     detail: str | None = None
     tone: InsightTone | None = None
     timestamp_label: str | None = None
+    pose_snapshot: PoseSnapshot | None = None
 
 
 class InjectTranscriptRequest(BaseModel):

@@ -27,6 +27,39 @@ export interface LiveInsight {
   tone: "positive" | "neutral" | "warning";
 }
 
+export interface PoseSnapshot {
+  bodyPresent: boolean;
+  faceVisible: boolean;
+  handsVisible: boolean;
+  shoulderVisible: boolean;
+  hipVisible: boolean;
+  bodyScale: number;
+  centerOffsetX: number;
+  shoulderTiltDeg: number;
+  torsoTiltDeg: number;
+  gestureActivity: number;
+  stabilityScore: number;
+}
+
+export interface PoseDebugState {
+  snapshotCount: number;
+  closeUpMode: boolean;
+  selectedRuleKey: string | null;
+  selectedRuleTitle: string | null;
+  selectedRuleTone: "positive" | "neutral" | "warning" | null;
+  bodyPresenceRatio: number;
+  faceVisibilityRatio: number;
+  handsVisibilityRatio: number;
+  shoulderVisibilityRatio: number;
+  hipVisibilityRatio: number;
+  averageBodyScale: number;
+  averageCenterOffsetX: number;
+  averageShoulderTiltDeg: number;
+  averageTorsoTiltDeg: number;
+  averageGestureActivity: number;
+  averageStabilityScore: number;
+}
+
 export interface SessionSetup {
   scenarioId: ScenarioType;
   language: LanguageOption;

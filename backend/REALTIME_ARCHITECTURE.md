@@ -27,16 +27,22 @@
 
 ### 仍然是 mock 或静态数据
 
-- `live_insight`
 - `GET /api/report`
 - `GET /api/history`
-- 视觉分析
+- 大模型级视觉理解
 - 语音播报
 - session 持久化
 
+### 已接入但仍然偏规则化
+
+- 前端本地姿态识别
+- 后端姿态聚合
+- 基于姿态规则的 `live_insight`
+- `Pose Debug` 本地/服务端可视化
+
 一句话总结：
 
-当前系统已经完成“真实实时转写”这条主链路，但分析、报告和历史仍然是原型层实现。
+当前系统已经完成“真实实时转写 + 姿态识别 V1”这两条主链路，但报告、历史和大模型视觉理解仍然是原型层实现。
 
 ## 当前架构
 
@@ -51,7 +57,7 @@ flowchart LR
     D --> E
 
     E --> F[Aliyun Realtime ASR]
-    E --> G[Mock Vision Service]
+    E --> G[Posture Vision Service]
     E --> H[Mock Coaching Service]
     E --> I[(Static Report and History Data)]
     E --> J[(Optional Debug Store)]
@@ -199,7 +205,12 @@ debug 链路只服务于回放和排障：
 
 ### 当前唯一保留的应用层补偿
 
-后端只保留一条窄规则：
+后端当前只保留两类窄规则：
+
+- transcript 层的语气词尾巴合并
+- posture 层的姿态信号聚合与提示生成
+
+其中 transcript 部分：
 
 - 如果某条 final transcript 只是 `嗯 / 哦 / 诶 / 哎 / 唉` 这类语气词尾巴
 - 并且说话人和上一条一致
@@ -232,6 +243,20 @@ debug 链路只服务于回放和排障：
 - 保存 `audio_000x.pcm`
 - 保存 `frame_000x.jpg`
 - 在 pause / finish 时保存 `session_full.webm`
+
+### Pose Debug 开关
+
+`Pose Debug` 和 `Debug Dump` 是两套不同目的的开关：
+
+- `Debug Dump`：控制是否写磁盘证据
+- `Pose Debug`：控制是否在前端显示姿态调试指标
+
+`Pose Debug` 打开后：
+
+- 左侧相机区会显示本地 `PoseSnapshot`
+- 右侧分析区会显示后端最近窗口的聚合结果
+
+这套调试信息不依赖后端写文件，适合在线调阈值。
 
 ### debug 目录
 
@@ -332,6 +357,7 @@ backend/debug/<session_id>/
 - 把前端音频转发给 provider
 - 把 provider transcript 广播给前端
 - 维护 session 内存态 transcript
+- 广播 `pose_debug`
 - debug 落盘
 
 ### [stt_service.py](/Users/bytedance/my_project/speak_up/backend/app/services/stt_service.py)
@@ -354,6 +380,15 @@ backend/debug/<session_id>/
 - 保存视频帧
 - 保存 provider 事件和 transcript merge 事件
 
+### [vision_service.py](/Users/bytedance/my_project/speak_up/backend/app/services/vision_service.py)
+
+负责：
+
+- 维护最近姿态窗口
+- 判断 `close_up_mode`
+- 把姿态指标聚合成后端规则判断
+- 返回 `live_insight` 和 `pose_debug`
+
 ## 当前配置项
 
 后端当前依赖这些环境变量：
@@ -371,9 +406,63 @@ ALIYUN_REALTIME_ASR_SILENCE_DURATION_MS=1200
 - `DASHSCOPE_API_KEY` 必填
 - `ALIYUN_REALTIME_ASR_SILENCE_DURATION_MS` 越大，断句越慢，最终句稳定性通常越高
 
+## 当前姿态 V1 设计
+
+当前姿态链路不是大模型视觉理解，而是两层结构：
+
+1. 前端 `MediaPipe Pose`
+2. 后端规则聚合
+
+### 前端本地特征
+
+前端大约每 `150ms` 跑一次姿态检测，并低频发送 `pose_snapshot`。当前主要提取：
+
+- `bodyPresent`
+- `faceVisible`
+- `handsVisible`
+- `shoulderVisible`
+- `hipVisible`
+- `bodyScale`
+- `centerOffsetX`
+- `shoulderTiltDeg`
+- `torsoTiltDeg`
+- `gestureActivity`
+- `stabilityScore`
+
+### 后端聚合
+
+后端保留最近 `6` 个 `pose_snapshot`，大致覆盖最近 `3s`。在这 3 秒窗口里聚合：
+
+- 身体/脸部/手部/肩膀/髋部可见比例
+- 身体尺度均值
+- 居中偏移均值
+- 肩线/躯干倾斜均值
+- 手势活跃度均值
+- 稳定性均值
+
+### Close-Up Mode
+
+当前姿态 V1 明确支持桌前近景。
+
+当后端判断：
+
+- 肩膀稳定可见
+- 髋部长期不可见
+- 脸部可见度较高
+- 人体尺度偏大
+
+则会进入 `close_up_mode`。
+
+进入该模式后：
+
+- 不再把“看不到髋部”当成异常
+- 姿态提示更偏头肩区域
+- 优先判断肩线、居中和上身稳定性
+- “站姿”类文案会改成“上身姿态”或“肩线”
+
 ## 当前限制
 
-- `live_insight` 还不是真实分析结果
+- `live_insight` 当前已经接入姿态识别 V1，但仍然是规则驱动
 - `GET /api/report` 仍然返回静态模板
 - `GET /api/history` 仍然返回静态历史数据
 - session 没有落库，后端重启后 replay 会丢
@@ -382,12 +471,13 @@ ALIYUN_REALTIME_ASR_SILENCE_DURATION_MS=1200
 
 ## 后续路线
 
-### Phase 2：真实视觉分析
+### Phase 2：大模型视觉分析
 
 目标：
 
 - 让 `video_frame` 真正进入模型
-- 用真实视觉信号替换 mock insight
+- 在当前姿态信号之上增加更高层的视觉理解
+- 用关键帧和 transcript 生成更自然的教练反馈
 
 建议做法：
 

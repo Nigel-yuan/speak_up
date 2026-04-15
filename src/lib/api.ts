@@ -1,5 +1,13 @@
 import type { HistoricalSessionSummary, SessionReport } from "@/types/report";
-import type { LanguageOption, PoseDebugState, PoseSnapshot, ScenarioOption, ScenarioType, SessionReplay, TranscriptChunk } from "@/types/session";
+import type {
+  CoachPanelState,
+  LanguageOption,
+  OmniDebugState,
+  ScenarioOption,
+  ScenarioType,
+  SessionReplay,
+  TranscriptChunk,
+} from "@/types/session";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 
@@ -40,6 +48,7 @@ export interface SessionStreamFrame {
     title: string;
     detail: string;
     tone: "positive" | "neutral" | "warning";
+    source: "system" | "omni-coach" | "manual";
   };
 }
 
@@ -73,9 +82,11 @@ export interface RealtimeEvent {
         title: string;
         detail: string;
         tone: "positive" | "neutral" | "warning";
+        source: "system" | "omni-coach" | "manual";
       }
     | null;
-  poseDebug?: PoseDebugState | null;
+  coachPanel?: CoachPanelState | null;
+  omniDebug?: OmniDebugState | null;
 }
 
 export function getSessionStream(scenario: ScenarioType, language: LanguageOption) {
@@ -131,7 +142,6 @@ export interface OutboundRealtimeMessage {
     | "start_stream"
     | "audio_chunk"
     | "video_frame"
-    | "pose_snapshot"
     | "inject_partial"
     | "inject_transcript"
     | "inject_insight";
@@ -146,5 +156,4 @@ export interface OutboundRealtimeMessage {
   detail?: string;
   tone?: "positive" | "neutral" | "warning";
   timestamp_label?: string;
-  pose_snapshot?: PoseSnapshot;
 }

@@ -25,39 +25,47 @@ export interface LiveInsight {
   title: string;
   detail: string;
   tone: "positive" | "neutral" | "warning";
+  source: "system" | "omni-coach" | "manual";
 }
 
-export interface PoseSnapshot {
-  bodyPresent: boolean;
-  faceVisible: boolean;
-  handsVisible: boolean;
-  shoulderVisible: boolean;
-  hipVisible: boolean;
-  bodyScale: number;
-  centerOffsetX: number;
-  shoulderTiltDeg: number;
-  torsoTiltDeg: number;
-  gestureActivity: number;
-  stabilityScore: number;
+export type CoachDimensionId = "body_expression" | "voice_pacing" | "content_expression";
+export type CoachDisplayStatus = "doing_well" | "stable" | "adjust_now" | "analyzing";
+export type CoachDimensionSource = "system" | "omni-coach" | "speech-rule";
+
+export interface CoachSummary {
+  title: string;
+  detail: string;
+  sourceDimension: CoachDimensionId | null;
+  updatedAtMs: number;
 }
 
-export interface PoseDebugState {
-  snapshotCount: number;
-  closeUpMode: boolean;
-  selectedRuleKey: string | null;
-  selectedRuleTitle: string | null;
-  selectedRuleTone: "positive" | "neutral" | "warning" | null;
-  bodyPresenceRatio: number;
-  faceVisibilityRatio: number;
-  handsVisibilityRatio: number;
-  shoulderVisibilityRatio: number;
-  hipVisibilityRatio: number;
-  averageBodyScale: number;
-  averageCenterOffsetX: number;
-  averageShoulderTiltDeg: number;
-  averageTorsoTiltDeg: number;
-  averageGestureActivity: number;
-  averageStabilityScore: number;
+export interface CoachDimensionState {
+  id: CoachDimensionId;
+  status: CoachDisplayStatus;
+  headline: string;
+  detail: string;
+  updatedAtMs: number;
+  source: CoachDimensionSource;
+}
+
+export interface CoachPanelState {
+  summary: CoachSummary;
+  bodyExpression: CoachDimensionState;
+  voicePacing: CoachDimensionState;
+  contentExpression: CoachDimensionState;
+}
+
+export interface OmniDebugState {
+  configured: boolean;
+  connected: boolean;
+  sessionUpdated: boolean;
+  responseCount: number;
+  insightCount: number;
+  lastStage: string | null;
+  lastEventType: string | null;
+  lastTextPreview: string | null;
+  lastInsightTitle: string | null;
+  lastError: string | null;
 }
 
 export interface SessionSetup {

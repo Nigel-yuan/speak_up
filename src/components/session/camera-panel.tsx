@@ -2,54 +2,18 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { usePoseTracker } from "@/hooks/usePoseTracker";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
-import type { PoseSnapshot } from "@/types/session";
 
 interface CameraPanelProps {
   children: React.ReactNode;
   isRunning: boolean;
   elapsedSeconds: number;
-  latestPoseSnapshot?: PoseSnapshot | null;
   onFrameCaptureReady?: (capture: () => string | null) => void;
-  onPoseSnapshotReady?: (capture: () => PoseSnapshot | null) => void;
-  poseDebugEnabled?: boolean;
 }
 
-function formatPoseNumber(value: number, digits = 2) {
-  return Number.isFinite(value) ? value.toFixed(digits) : "--";
-}
-
-type PoseCameraMode = "missing" | "upper-body" | "full-body";
-
-function getPoseCameraMode(snapshot: PoseSnapshot | null): PoseCameraMode {
-  if (!snapshot?.shoulderVisible) {
-    return "missing";
-  }
-
-  return snapshot.hipVisible ? "full-body" : "upper-body";
-}
-
-function isUpperBodyMode(snapshot: PoseSnapshot | null) {
-  return getPoseCameraMode(snapshot) === "upper-body";
-}
-
-function hasCenterOffsetIssue(snapshot: PoseSnapshot | null) {
-  return Boolean(snapshot && Math.abs(snapshot.centerOffsetX) > 0.18);
-}
-
-function hasTiltIssue(snapshot: PoseSnapshot | null) {
-  return Boolean(snapshot && (Math.abs(snapshot.torsoTiltDeg) > 8 || Math.abs(snapshot.shoulderTiltDeg) > 7));
-}
-
-function hasLowGestureIssue(snapshot: PoseSnapshot | null) {
-  return Boolean(snapshot && !snapshot.handsVisible && snapshot.gestureActivity < 0.06);
-}
-
-function hasStabilityIssue(snapshot: PoseSnapshot | null) {
-  return Boolean(snapshot && snapshot.stabilityScore < 0.45);
-}
+const MAX_CAPTURE_WIDTH = 1280;
+const MAX_CAPTURE_HEIGHT = 720;
 
 function formatTime(totalSeconds: number) {
   const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
@@ -57,96 +21,42 @@ function formatTime(totalSeconds: number) {
   return `${minutes}:${seconds}`;
 }
 
-function buildPoseStageTitle(snapshot: PoseSnapshot | null, error: string | null) {
-  if (error) {
-    return "镜头表现 · 姿态模型暂不可用";
+function buildStageTitle(permissionState: "idle" | "granted" | "denied", isRunning: boolean) {
+  if (permissionState === "denied") {
+    return "镜头表现 · 摄像头未授权";
   }
 
-  if (!snapshot) {
-    return "镜头表现 · 等待姿态跟踪";
+  if (!isRunning) {
+    return "镜头表现 · 等待演讲开始";
   }
 
-  if (!snapshot.bodyPresent) {
-    return "镜头表现 · 请把头肩收回画面";
-  }
-
-  if (hasCenterOffsetIssue(snapshot)) {
-    return "镜头表现 · 身体偏离画面中心";
-  }
-
-  if (hasTiltIssue(snapshot)) {
-    return isUpperBodyMode(snapshot) ? "镜头表现 · 肩线有些倾斜" : "镜头表现 · 身体有些歪斜";
-  }
-
-  if (hasLowGestureIssue(snapshot)) {
-    return "镜头表现 · 手势偏少";
-  }
-
-  if (hasStabilityIssue(snapshot)) {
-    return isUpperBodyMode(snapshot) ? "镜头表现 · 上身略有晃动" : "镜头表现 · 身体略有晃动";
-  }
-
-  return isUpperBodyMode(snapshot) ? "镜头表现 · 上身姿态稳定" : "镜头表现 · 姿态稳定";
+  return "镜头表现 · 后端分析中";
 }
 
-function buildPoseStageDetail(snapshot: PoseSnapshot | null, error: string | null) {
-  if (error) {
-    return "本地姿态检测当前不可用，实时字幕和音频链路不受影响。";
+function buildStageDetail(permissionState: "idle" | "granted" | "denied", isRunning: boolean) {
+  if (permissionState === "denied") {
+    return "当前无法读取摄像头画面，后端视频分析也不会生效。";
   }
 
-  if (!snapshot) {
-    return "开始演讲后，系统会持续跟踪站姿、居中程度和手势活跃度。";
+  if (!isRunning) {
+    return "开始演讲后，系统会把视频帧持续发送到后端做统一分析。";
   }
 
-  if (!snapshot.bodyPresent) {
-    return "尽量让头部和肩膀稳定进入镜头中央，系统才能持续判断你的近景姿态。";
-  }
-
-  if (hasCenterOffsetIssue(snapshot)) {
-    return "把身体稍微往镜头中心收一点，画面会更稳，观众也更容易跟上你的表达。";
-  }
-
-  if (hasTiltIssue(snapshot)) {
-    return isUpperBodyMode(snapshot)
-      ? "你的头肩区域有些倾斜。把肩线放平一点，镜头里的上身会更稳，也更有交流感。"
-      : "保持肩膀和躯干更垂直一些，会让整体气场更稳，表达也更可信。";
-  }
-
-  if (hasLowGestureIssue(snapshot)) {
-    return "当前手势参与感偏低。讲重点句时可以加入少量自然手势，增强表达支撑。";
-  }
-
-  if (hasStabilityIssue(snapshot)) {
-    return isUpperBodyMode(snapshot)
-      ? "你的上身细小晃动有点多。重点句前先把头肩位置稳住，镜头表现会更沉着。"
-      : "身体的细小晃动有点多。重点句前先站稳，再开口，听感会更有力量。";
-  }
-
-  return isUpperBodyMode(snapshot)
-    ? "当前近景上身姿态比较稳，可以继续把注意力放在语气、节奏和内容推进上。"
-    : "当前姿态基础不错，可以继续把注意力放在语气、节奏和内容推进上。";
+  return "当前视频理解已切到后端统一分析，页面不再本地跑姿态小模型。";
 }
 
 export function CameraPanel({
   children,
   isRunning,
   elapsedSeconds,
-  latestPoseSnapshot,
   onFrameCaptureReady,
-  onPoseSnapshotReady,
-  poseDebugEnabled = false,
 }: CameraPanelProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null);
   const [permissionState, setPermissionState] = useState<"idle" | "granted" | "denied">("idle");
-  const { error: poseTrackerError, getLatestSnapshot, snapshot } = usePoseTracker({
-    enabled: isRunning && permissionState === "granted",
-    videoElement,
-  });
+
   const handleVideoRef = useCallback((node: HTMLVideoElement | null) => {
     videoRef.current = node;
-    setVideoElement(node);
   }, []);
 
   useEffect(() => {
@@ -187,8 +97,11 @@ export function CameraPanel({
         return null;
       }
 
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+      const widthScale = MAX_CAPTURE_WIDTH / video.videoWidth;
+      const heightScale = MAX_CAPTURE_HEIGHT / video.videoHeight;
+      const scale = Math.min(1, widthScale, heightScale);
+      canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+      canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
       const context = canvas.getContext("2d");
       if (!context) {
         return null;
@@ -199,17 +112,8 @@ export function CameraPanel({
     });
   }, [onFrameCaptureReady]);
 
-  useEffect(() => {
-    if (!onPoseSnapshotReady) {
-      return;
-    }
-
-    onPoseSnapshotReady(() => getLatestSnapshot());
-  }, [getLatestSnapshot, onPoseSnapshotReady]);
-
-  const activePoseSnapshot = isRunning ? snapshot : latestPoseSnapshot ?? null;
-  const stageTitle = buildPoseStageTitle(activePoseSnapshot, poseTrackerError);
-  const stageDetail = buildPoseStageDetail(activePoseSnapshot, poseTrackerError);
+  const stageTitle = buildStageTitle(permissionState, isRunning);
+  const stageDetail = buildStageDetail(permissionState, isRunning);
 
   return (
     <Card className="flex h-full min-h-0 flex-col overflow-hidden rounded-[28px] border-white/60 bg-slate-950 text-white shadow-[0_18px_45px_rgba(15,23,42,0.18)]">
@@ -229,7 +133,7 @@ export function CameraPanel({
           <div className="flex h-full flex-col items-center justify-center gap-4 px-8 text-center">
             <div className="rounded-full bg-white/10 px-4 py-2 text-sm text-slate-300">摄像头未授权</div>
             <p className="max-w-md text-sm leading-7 text-slate-400">
-              当前先展示原型占位态。后续接真实训练时，这里会保留用户视频、姿态观察和镜头表现分析。
+              当前先展示原型占位态。后续接真实训练时，这里会保留用户视频和后端视频理解结果。
             </p>
           </div>
         ) : (
@@ -241,51 +145,12 @@ export function CameraPanel({
               <div className="rounded-2xl bg-black/40 px-4 py-3 text-sm text-slate-100 backdrop-blur">
                 {stageTitle}
               </div>
-              {poseDebugEnabled ? (
-                <div className="w-[320px] rounded-2xl bg-black/55 px-4 py-3 text-xs text-slate-100 backdrop-blur">
-                  <p className="font-semibold uppercase tracking-[0.18em] text-sky-200">Pose Debug · Local</p>
-                  <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-[11px] leading-5">
-                    <span>model ready</span>
-                    <span className="text-right">{poseTrackerError ? "error" : snapshot ? "running" : "waiting"}</span>
-                    <span>body present</span>
-                    <span className="text-right">{activePoseSnapshot?.bodyPresent ? "yes" : "no"}</span>
-                    <span>face visible</span>
-                    <span className="text-right">{activePoseSnapshot?.faceVisible ? "yes" : "no"}</span>
-                    <span>shoulder visible</span>
-                    <span className="text-right">{activePoseSnapshot?.shoulderVisible ? "yes" : "no"}</span>
-                    <span>hip visible</span>
-                    <span className="text-right">{activePoseSnapshot?.hipVisible ? "yes" : "no"}</span>
-                    <span>hands visible</span>
-                    <span className="text-right">{activePoseSnapshot?.handsVisible ? "yes" : "no"}</span>
-                    <span>camera mode</span>
-                    <span className="text-right">
-                      {getPoseCameraMode(activePoseSnapshot)}
-                    </span>
-                    <span>body scale</span>
-                    <span className="text-right">{formatPoseNumber(activePoseSnapshot?.bodyScale ?? Number.NaN, 3)}</span>
-                    <span>center offset</span>
-                    <span className="text-right">{formatPoseNumber(activePoseSnapshot?.centerOffsetX ?? Number.NaN, 3)}</span>
-                    <span>shoulder tilt</span>
-                    <span className="text-right">{formatPoseNumber(activePoseSnapshot?.shoulderTiltDeg ?? Number.NaN, 1)}°</span>
-                    <span>torso tilt</span>
-                    <span className="text-right">{formatPoseNumber(activePoseSnapshot?.torsoTiltDeg ?? Number.NaN, 1)}°</span>
-                    <span>gesture</span>
-                    <span className="text-right">{formatPoseNumber(activePoseSnapshot?.gestureActivity ?? Number.NaN, 2)}</span>
-                    <span>stability</span>
-                    <span className="text-right">{formatPoseNumber(activePoseSnapshot?.stabilityScore ?? Number.NaN, 2)}</span>
-                  </div>
-                </div>
-              ) : null}
             </div>
-            <div className="absolute bottom-5 left-5 right-5 flex flex-col gap-3">
-              <div className="max-w-2xl rounded-2xl bg-black/40 px-5 py-4 backdrop-blur">
-                <p className="text-xs uppercase tracking-[0.22em] text-violet-200">当前提示</p>
-                <p className="mt-2 text-sm leading-6 text-slate-100">
-                  {stageDetail}
-                </p>
-              </div>
-              <div>{children}</div>
+            <div className="absolute bottom-5 left-5 max-w-sm rounded-3xl border border-white/10 bg-black/40 px-5 py-4 shadow-[0_18px_45px_rgba(2,6,23,0.22)] backdrop-blur">
+              <p className="text-lg font-semibold">{isRunning ? "实时画面处理中" : "主视区待命"}</p>
+              <p className="mt-2 text-sm leading-6 text-slate-300">{stageDetail}</p>
             </div>
+            <div className="absolute bottom-5 right-5">{children}</div>
           </>
         )}
       </div>

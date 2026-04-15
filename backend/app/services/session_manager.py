@@ -11,28 +11,30 @@ from fastapi import UploadFile, WebSocket
 
 from app.schemas import (
     AckEvent,
+    CoachPanelEvent,
     ClientMessage,
     ErrorEvent,
     InjectInsightRequest,
     InjectTranscriptRequest,
     LiveInsight,
     LiveInsightEvent,
-    PoseDebugEvent,
+    OmniDebugEvent,
+    OmniDebugState,
     PongEvent,
-    PoseSnapshot,
     RealtimeSession,
     RealtimeStatusEvent,
-    ScenarioType,
     LanguageOption,
+    ScenarioType,
     SessionStatus,
     TranscriptChunk,
     TranscriptFinalEvent,
     TranscriptPartialEvent,
 )
-from app.services.coaching_service import MockCoachingService
+from app.services.coach_panel_service import CoachPanelService
 from app.services.debug_store import DebugStore
+from app.services.omni_service import AliyunOmniCoachService, OmniCoachUpdate
+from app.services.speech_analysis_service import SpeechAnalysisService
 from app.services.stt_service import ProviderTranscriptResult, build_stt_service
-from app.services.vision_service import PostureVisionService
 
 
 @dataclass
@@ -48,6 +50,13 @@ class SessionRecord:
     video_frame_count: int = 0
     started_at_monotonic: float | None = None
     transcript_chunks: list[TranscriptChunk] = field(default_factory=list)
+    omni_debug: OmniDebugState = field(
+        default_factory=lambda: OmniDebugState(
+            configured=False,
+            connected=False,
+            sessionUpdated=False,
+        )
+    )
     stream_task: asyncio.Task[None] | None = field(default=None, repr=False)
     sockets: list[WebSocket] = field(default_factory=list, repr=False)
 
@@ -74,8 +83,10 @@ class SessionManager:
     def __init__(self) -> None:
         self.sessions: dict[str, SessionRecord] = {}
         self.stt_service = build_stt_service()
-        self.vision_service = PostureVisionService()
-        self.coaching_service = MockCoachingService()
+        self.omni_coach_service = AliyunOmniCoachService(analysis_scope="voice_content", turn_mode="vad")
+        self.omni_body_service = AliyunOmniCoachService(analysis_scope="body_visual", turn_mode="manual")
+        self.speech_analysis_service = SpeechAnalysisService()
+        self.coach_panel_service = CoachPanelService()
         self.debug_store = DebugStore(Path(__file__).resolve().parents[2] / "debug")
 
     def create_session(self, scenario_id: ScenarioType, language: LanguageOption, debug_enabled: bool) -> SessionRecord:
@@ -86,6 +97,8 @@ class SessionManager:
             language=language,
             debug_enabled=debug_enabled,
         )
+        session.omni_debug.configured = self.omni_coach_service.is_configured or self.omni_body_service.is_configured
+        self.coach_panel_service.get_or_create_panel(session_id, language)
         self.sessions[session_id] = session
         if session.debug_enabled:
             self.debug_store.init_session(
@@ -119,9 +132,27 @@ class SessionManager:
                     {"type": "provider_finish_error", "provider": "aliyun-qwen-asr", "message": str(error)},
                 )
 
+        try:
+            await self.omni_coach_service.finish_session(session_id)
+        except Exception as error:
+            if session.debug_enabled:
+                self.debug_store.append_event(
+                    session_id,
+                    {"type": "provider_finish_error", "provider": "aliyun-omni-coach", "message": str(error)},
+                )
+        try:
+            await self.omni_body_service.finish_session(session_id)
+        except Exception as error:
+            if session.debug_enabled:
+                self.debug_store.append_event(
+                    session_id,
+                    {"type": "provider_finish_error", "provider": "aliyun-omni-body-coach", "message": str(error)},
+                )
+
         session.status = "finished"
         session.stream_task = None
-        self.vision_service.close_session(session_id)
+        self.speech_analysis_service.close_session(session_id)
+        self.coach_panel_service.close_session(session_id)
         if session.debug_enabled:
             self.debug_store.append_event(session_id, {"type": "session_finished", "status": session.status})
         await self.broadcast_status(session)
@@ -173,14 +204,23 @@ class SessionManager:
         await websocket.accept()
         session.sockets.append(websocket)
         await websocket.send_json(RealtimeStatusEvent(sessionId=session.session_id, status=session.status).model_dump())
+        await websocket.send_json(
+            CoachPanelEvent(
+                coachPanel=self.coach_panel_service.get_or_create_panel(session.session_id, session.language)
+            ).model_dump()
+        )
+        await websocket.send_json(OmniDebugEvent(omniDebug=session.omni_debug).model_dump())
 
     def disconnect(self, session: SessionRecord, websocket: WebSocket) -> None:
         if websocket in session.sockets:
             session.sockets.remove(websocket)
         if not session.sockets:
             session.stream_task = None
-            self.vision_service.close_session(session.session_id)
+            self.speech_analysis_service.close_session(session.session_id)
+            self.coach_panel_service.close_session(session.session_id)
             asyncio.create_task(self.stt_service.close_session(session.session_id))
+            asyncio.create_task(self.omni_coach_service.close_session(session.session_id))
+            asyncio.create_task(self.omni_body_service.close_session(session.session_id))
 
     @staticmethod
     def _is_debug_enabled(session: SessionRecord) -> bool:
@@ -194,7 +234,7 @@ class SessionManager:
         async def log_event(stage: str, payload: dict, summary: dict | None = None) -> None:
             if not self._is_debug_enabled(session):
                 return
-            self.debug_store.append_stt_provider_event(
+            self.debug_store.append_provider_event(
                 session.session_id,
                 provider,
                 stage,
@@ -204,13 +244,53 @@ class SessionManager:
 
         return log_event
 
+    def _build_omni_event_logger(
+        self,
+        session: SessionRecord,
+        provider: str = "aliyun-omni-coach",
+    ) -> Callable[[str, dict, dict | None], asyncio.Future | None]:
+        async def log_event(stage: str, payload: dict, summary: dict | None = None) -> None:
+            if self._is_debug_enabled(session):
+                self.debug_store.append_provider_event(
+                    session.session_id,
+                    provider,
+                    stage,
+                    payload,
+                    summary,
+                )
+
+            event_type = summary.get("eventType") if summary else None
+            if stage == "session_created":
+                session.omni_debug.connected = True
+                session.omni_debug.lastError = None
+            elif stage == "session_updated":
+                session.omni_debug.connected = True
+                session.omni_debug.sessionUpdated = True
+                session.omni_debug.lastError = None
+            elif stage in {"text_done", "response_done_fallback"}:
+                session.omni_debug.responseCount += 1
+                preview = summary.get("textPreview") if summary else None
+                session.omni_debug.lastTextPreview = preview if isinstance(preview, str) else None
+            elif stage == "error":
+                message = summary.get("message") if summary else None
+                session.omni_debug.lastError = message if isinstance(message, str) else "Omni coach 服务返回错误"
+            elif stage == "session_finished":
+                session.omni_debug.connected = False
+
+            if event_type:
+                session.omni_debug.lastEventType = str(event_type)
+            session.omni_debug.lastStage = stage
+            await self._broadcast(session, OmniDebugEvent(omniDebug=session.omni_debug).model_dump())
+
+        return log_event
+
     async def handle_client_message(self, session: SessionRecord, message: ClientMessage, websocket: WebSocket) -> None:
         if self._is_debug_enabled(session):
             self.debug_store.append_event(
                 session.session_id,
                 {
                     "type": "client_message",
-                    **message.model_dump(exclude={"payload", "image_base64", "pose_snapshot"}),
+                    **message.model_dump(exclude={"payload", "image_base64"}),
                 },
             )
 
@@ -236,6 +316,51 @@ class SessionManager:
                 await websocket.send_json(ErrorEvent(message=str(error)).model_dump())
                 return
 
+            try:
+                await self.omni_coach_service.connect_session(
+                    session.session_id,
+                    session.scenario_id,
+                    session.language,
+                    on_insight=lambda update: self._broadcast_omni_update(session, update),
+                    on_error=lambda message: self._record_omni_error(session, message),
+                    on_event=self._build_omni_event_logger(session, "aliyun-omni-coach"),
+                )
+            except Exception as error:
+                session.omni_debug.lastError = str(error)
+                session.omni_debug.lastStage = "connect_error"
+                await self._broadcast(session, OmniDebugEvent(omniDebug=session.omni_debug).model_dump())
+                if self._is_debug_enabled(session):
+                    self.debug_store.append_event(
+                        session.session_id,
+                        {
+                            "type": "provider_connect_error",
+                            "provider": "aliyun-omni-coach",
+                            "message": str(error),
+                        },
+                    )
+            try:
+                await self.omni_body_service.connect_session(
+                    session.session_id,
+                    session.scenario_id,
+                    session.language,
+                    on_insight=lambda update: self._broadcast_omni_update(session, update),
+                    on_error=lambda message: self._record_omni_error(session, message),
+                    on_event=self._build_omni_event_logger(session, "aliyun-omni-body-coach"),
+                )
+            except Exception as error:
+                session.omni_debug.lastError = str(error)
+                session.omni_debug.lastStage = "connect_error"
+                await self._broadcast(session, OmniDebugEvent(omniDebug=session.omni_debug).model_dump())
+                if self._is_debug_enabled(session):
+                    self.debug_store.append_event(
+                        session.session_id,
+                        {
+                            "type": "provider_connect_error",
+                            "provider": "aliyun-omni-body-coach",
+                            "message": str(error),
+                        },
+                    )
+
             session.status = "streaming"
             session.started_at_monotonic = monotonic()
             await self.broadcast_status(session)
@@ -257,6 +382,15 @@ class SessionManager:
                 await websocket.send_json(ErrorEvent(message=str(error)).model_dump())
                 return
 
+            try:
+                await self.omni_coach_service.send_audio_chunk(session.session_id, message.payload)
+            except Exception as error:
+                await self._record_omni_error(session, f"发送音频到 Omni coach 失败：{error}")
+            try:
+                await self.omni_body_service.send_audio_chunk(session.session_id, message.payload)
+            except Exception as error:
+                await self._record_omni_error(session, f"发送音频到 Omni body coach 失败：{error}")
+
             if path:
                 await websocket.send_json(AckEvent(message=f"audio chunk saved -> {path}").model_dump())
             return
@@ -266,16 +400,18 @@ class SessionManager:
             path = ""
             if self._is_debug_enabled(session):
                 path = self.debug_store.save_video_frame(session.session_id, session.video_frame_count, message.image_base64)
-            ack_message = self.vision_service.acknowledge_video_frame(session.video_frame_count)
+            try:
+                await self.omni_coach_service.send_video_frame(session.session_id, message.image_base64)
+            except Exception as error:
+                await self._record_omni_error(session, f"发送视频帧到 Omni coach 失败：{error}")
+            try:
+                await self.omni_body_service.send_video_frame(session.session_id, message.image_base64)
+            except Exception as error:
+                await self._record_omni_error(session, f"发送视频帧到 Omni body coach 失败：{error}")
+            ack_message = f"video frame #{session.video_frame_count} received"
             if path:
                 ack_message = f"{ack_message} -> {path}"
-            await websocket.send_json(
-                AckEvent(message=ack_message).model_dump()
-            )
-            return
-
-        if message.type == "pose_snapshot" and message.pose_snapshot:
-            await self._handle_pose_snapshot(session, message.pose_snapshot)
+            await websocket.send_json(AckEvent(message=ack_message).model_dump())
             return
 
         if message.type == "inject_partial" and message.text:
@@ -300,6 +436,7 @@ class SessionManager:
                 title=message.title,
                 detail=message.detail,
                 tone=message.tone,
+                source="manual",
             )
             await self.broadcast_insight(session, insight, source="websocket")
             return
@@ -323,6 +460,7 @@ class SessionManager:
             title=payload.title,
             detail=payload.detail,
             tone=payload.tone,
+            source="manual",
         )
         await self.broadcast_insight(session, insight, source="rest")
 
@@ -345,6 +483,19 @@ class SessionManager:
             merged_chunk = self._merge_transcript_chunks(session.language, previous_chunk, chunk)
             session.transcript_chunks[-1] = merged_chunk
             await self._broadcast(session, TranscriptFinalEvent(chunk=merged_chunk, replacePrevious=True).model_dump())
+            speech_update = self.speech_analysis_service.replace_last_chunk(
+                session.session_id,
+                session.language,
+                merged_chunk,
+            )
+            coach_panel = self.coach_panel_service.update_from_speech(
+                session.session_id,
+                session.language,
+                speech_update,
+                merged_chunk.endMs,
+            )
+            if coach_panel is not None:
+                await self._broadcast(session, CoachPanelEvent(coachPanel=coach_panel).model_dump())
             if self._is_debug_enabled(session):
                 self.debug_store.save_transcript_merge(
                     session.session_id,
@@ -359,12 +510,21 @@ class SessionManager:
         session.transcript_count += 1
         session.transcript_chunks.append(chunk)
         await self._broadcast(session, TranscriptFinalEvent(chunk=chunk).model_dump())
+        speech_update = self.speech_analysis_service.ingest_chunk(session.session_id, session.language, chunk)
+        coach_panel = self.coach_panel_service.update_from_speech(
+            session.session_id,
+            session.language,
+            speech_update,
+            chunk.endMs,
+        )
+        if coach_panel is not None:
+            await self._broadcast(session, CoachPanelEvent(coachPanel=coach_panel).model_dump())
         if self._is_debug_enabled(session):
             self.debug_store.save_transcript_injection(session.session_id, chunk, source)
 
     async def broadcast_insight(self, session: SessionRecord, insight: LiveInsight, source: str) -> None:
         session.insight_count += 1
-        await self._broadcast(session, self.coaching_service.build_live_insight_event(insight).model_dump())
+        await self._broadcast(session, LiveInsightEvent(insight=insight).model_dump())
         if self._is_debug_enabled(session):
             self.debug_store.save_insight_injection(session.session_id, insight, source)
 
@@ -393,20 +553,45 @@ class SessionManager:
                 {"type": "provider_error", "provider": "aliyun-qwen-asr", "message": message},
             )
 
-    async def _handle_pose_snapshot(self, session: SessionRecord, snapshot: PoseSnapshot) -> None:
-        insight, pose_debug = self.vision_service.process_pose_snapshot(session.session_id, session.language, snapshot)
+    async def _broadcast_omni_update(self, session: SessionRecord, update: OmniCoachUpdate) -> None:
+        updated_at_ms = self._build_elapsed_ms(session)
+
+        if update.patch is not None:
+            coach_panel = self.coach_panel_service.update_from_omni_patch(
+                session.session_id,
+                session.language,
+                update.patch,
+                updated_at_ms,
+            )
+            if coach_panel is not None:
+                await self._broadcast(session, CoachPanelEvent(coachPanel=coach_panel).model_dump())
+
+        insight = update.insight
+        if insight is None and update.patch is not None:
+            insight = self.coach_panel_service.build_debug_insight_from_patch(
+                update.patch,
+                insight_id=f"omni-{session.session_id}-{updated_at_ms}",
+            )
+
+        if insight is None:
+            return
+
+        session.omni_debug.insightCount += 1
+        session.omni_debug.lastInsightTitle = insight.title
+        session.omni_debug.lastError = None
+        session.omni_debug.lastStage = "insight_emitted"
+        await self._broadcast(session, OmniDebugEvent(omniDebug=session.omni_debug).model_dump())
+        await self.broadcast_insight(session, insight, source="omni-coach")
+
+    async def _record_omni_error(self, session: SessionRecord, message: str) -> None:
+        session.omni_debug.lastError = message
+        session.omni_debug.lastStage = "runtime_error"
+        await self._broadcast(session, OmniDebugEvent(omniDebug=session.omni_debug).model_dump())
         if self._is_debug_enabled(session):
             self.debug_store.append_event(
                 session.session_id,
-                {
-                    "type": "pose_snapshot_received",
-                    "snapshot": snapshot.model_dump(),
-                    "poseDebug": pose_debug.model_dump(),
-                },
+                {"type": "provider_error", "provider": "aliyun-omni-coach", "message": message},
             )
-        await self._broadcast(session, PoseDebugEvent(poseDebug=pose_debug).model_dump())
-        if insight is not None:
-            await self.broadcast_insight(session, insight, source="pose-vision")
 
     async def _broadcast(self, session: SessionRecord, payload: dict) -> None:
         stale: list[WebSocket] = []

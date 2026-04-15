@@ -25,8 +25,8 @@ export function SessionWorkspace({
 }: SessionWorkspaceProps) {
   const router = useRouter();
   const { error: sessionError, history, saveResult } = useSessionResult();
+  const [coachDebugEnabled, setCoachDebugEnabled] = useState(false);
   const [debugEnabled, setDebugEnabled] = useState(false);
-  const [poseDebugEnabled, setPoseDebugEnabled] = useState(false);
   const [language, setLanguage] = useState<LanguageOption>(defaultLanguage);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [scenarioOpen, setScenarioOpen] = useState(false);
@@ -85,7 +85,7 @@ export function SessionWorkspace({
   const session = useMockSession({ scenarioId, language, debugEnabled });
   const {
     activeTranscript,
-    currentInsight,
+    coachPanel,
     elapsedSeconds,
     error,
     finish,
@@ -94,17 +94,13 @@ export function SessionWorkspace({
     isLoading,
     isRunning,
     pause,
-    poseDebug,
-    poseSnapshotCount,
-    registerPoseSnapshotProvider,
+    omniDebug,
     registerVideoFrameProvider,
     reset,
     sessionId,
     start,
     statusText,
     transcript,
-    latestPoseSnapshot,
-    lastPoseSnapshotAt,
   } = session;
 
   const closeHistory = () => setHistoryOpen(false);
@@ -162,16 +158,16 @@ export function SessionWorkspace({
       <div className="mx-auto grid h-full max-w-[1720px] gap-4 xl:grid-cols-[minmax(0,1.75fr)_420px]">
         <section className="flex min-h-0 flex-col gap-3">
           <SessionToolbar
+            coachDebugEnabled={coachDebugEnabled}
             debugEnabled={debugEnabled}
             debugToggleDisabled={isRunning || isLoading}
             language={language}
+            onCoachDebugToggle={() => setCoachDebugEnabled((value) => !value)}
             onDebugToggle={() => setDebugEnabled((value) => !value)}
-            onPoseDebugToggle={() => setPoseDebugEnabled((value) => !value)}
             onHistoryToggle={() => setHistoryOpen((value) => !value)}
             onLanguageChange={setLanguage}
             onScenarioChange={setSelectedScenarioId}
             onScenarioToggle={() => setScenarioOpen((value) => !value)}
-            poseDebugEnabled={poseDebugEnabled}
             scenario={scenarioId}
             scenarioOpen={scenarioOpen}
             scenarios={scenarios}
@@ -180,10 +176,7 @@ export function SessionWorkspace({
             <CameraPanel
               elapsedSeconds={elapsedSeconds}
               isRunning={isRunning && !controlsDisabled}
-              latestPoseSnapshot={latestPoseSnapshot}
-              onPoseSnapshotReady={registerPoseSnapshotProvider}
               onFrameCaptureReady={registerVideoFrameProvider}
-              poseDebugEnabled={poseDebugEnabled}
             >
               <div className="space-y-2">
                 {statusMessage ? (
@@ -210,18 +203,16 @@ export function SessionWorkspace({
         </section>
 
         <aside className="flex min-h-0 flex-col gap-3 pt-[52px]">
-          <div className="min-h-0 flex-[1.05]">
+          <div className="min-h-0 flex-[0.7]">
             <TranscriptPanel activeTranscript={activeTranscript} transcript={transcript} />
           </div>
-          <div className="min-h-0 flex-1">
+          <div className="min-h-0 flex-[1.3]">
             <LiveAnalysisPanel
-              currentInsight={currentInsight}
+              coachPanel={coachPanel}
               insights={insights}
-              lastPoseSnapshotAt={lastPoseSnapshotAt}
-              latestPoseSnapshot={latestPoseSnapshot}
-              poseDebug={poseDebug}
-              poseDebugEnabled={poseDebugEnabled}
-              poseSnapshotCount={poseSnapshotCount}
+              language={language}
+              omniDebug={omniDebug}
+              coachDebugEnabled={coachDebugEnabled}
             />
           </div>
         </aside>

@@ -6,6 +6,10 @@ from pydantic import BaseModel
 ScenarioType = Literal["host", "guest-sharing", "standup"]
 LanguageOption = Literal["zh", "en"]
 InsightTone = Literal["positive", "neutral", "warning"]
+InsightSource = Literal["system", "omni-coach", "manual"]
+CoachDimensionId = Literal["body_expression", "voice_pacing", "content_expression"]
+CoachDisplayStatus = Literal["doing_well", "stable", "adjust_now", "analyzing"]
+CoachDimensionSource = Literal["system", "omni-coach", "speech-rule"]
 TranscriptSpeaker = Literal["user", "coach"]
 SessionStatus = Literal["created", "streaming", "finished"]
 RealtimeEventType = Literal[
@@ -13,7 +17,8 @@ RealtimeEventType = Literal[
     "transcript_partial",
     "transcript_final",
     "live_insight",
-    "pose_debug",
+    "coach_panel",
+    "omni_debug",
     "pong",
     "ack",
     "error",
@@ -23,7 +28,6 @@ ClientMessageType = Literal[
     "start_stream",
     "audio_chunk",
     "video_frame",
-    "pose_snapshot",
     "inject_partial",
     "inject_transcript",
     "inject_insight",
@@ -54,39 +58,54 @@ class LiveInsight(BaseModel):
     title: str
     detail: str
     tone: InsightTone
+    source: InsightSource = "system"
 
 
-class PoseSnapshot(BaseModel):
-    bodyPresent: bool
-    faceVisible: bool
-    handsVisible: bool
-    shoulderVisible: bool
-    hipVisible: bool
-    bodyScale: float
-    centerOffsetX: float
-    shoulderTiltDeg: float
-    torsoTiltDeg: float
-    gestureActivity: float
-    stabilityScore: float
+class CoachSummary(BaseModel):
+    title: str
+    detail: str
+    sourceDimension: CoachDimensionId | None = None
+    updatedAtMs: int = 0
 
 
-class PoseDebugState(BaseModel):
-    snapshotCount: int
-    closeUpMode: bool
-    selectedRuleKey: str | None = None
-    selectedRuleTitle: str | None = None
-    selectedRuleTone: InsightTone | None = None
-    bodyPresenceRatio: float
-    faceVisibilityRatio: float
-    handsVisibilityRatio: float
-    shoulderVisibilityRatio: float
-    hipVisibilityRatio: float
-    averageBodyScale: float
-    averageCenterOffsetX: float
-    averageShoulderTiltDeg: float
-    averageTorsoTiltDeg: float
-    averageGestureActivity: float
-    averageStabilityScore: float
+class CoachDimensionState(BaseModel):
+    id: CoachDimensionId
+    status: CoachDisplayStatus
+    headline: str
+    detail: str
+    updatedAtMs: int = 0
+    source: CoachDimensionSource = "system"
+
+
+class CoachPanelState(BaseModel):
+    summary: CoachSummary
+    bodyExpression: CoachDimensionState
+    voicePacing: CoachDimensionState
+    contentExpression: CoachDimensionState
+
+
+class CoachPanelPatchDimension(BaseModel):
+    id: CoachDimensionId
+    status: CoachDisplayStatus
+    headline: str
+    detail: str
+
+
+class CoachPanelPatch(BaseModel):
+    dimensions: list[CoachPanelPatchDimension] = []
+
+
+class OmniDebugState(BaseModel):
+    configured: bool
+    connected: bool
+    sessionUpdated: bool
+    responseCount: int = 0
+    insightCount: int = 0
+    lastStage: str | None = None
+    lastEventType: str | None = None
+    lastTextPreview: str | None = None
+    lastInsightTitle: str | None = None
+    lastError: str | None = None
 
 
 class SessionSetup(BaseModel):
@@ -194,9 +213,14 @@ class LiveInsightEvent(BaseModel):
     insight: LiveInsight
 
 
-class PoseDebugEvent(BaseModel):
-    type: Literal["pose_debug"] = "pose_debug"
-    poseDebug: PoseDebugState
+class CoachPanelEvent(BaseModel):
+    type: Literal["coach_panel"] = "coach_panel"
+    coachPanel: CoachPanelState
+
+
+class OmniDebugEvent(BaseModel):
+    type: Literal["omni_debug"] = "omni_debug"
+    omniDebug: OmniDebugState
 
 
 class PongEvent(BaseModel):
@@ -226,7 +250,6 @@ class ClientMessage(BaseModel):
     detail: str | None = None
     tone: InsightTone | None = None
     timestamp_label: str | None = None
-    pose_snapshot: PoseSnapshot | None = None
 
 
 class InjectTranscriptRequest(BaseModel):

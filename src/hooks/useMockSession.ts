@@ -9,7 +9,13 @@ import {
   type OutboundRealtimeMessage,
   type RealtimeEvent,
 } from "@/lib/api";
-import type { LiveInsight, PoseDebugState, PoseSnapshot, SessionSetup, TranscriptChunk } from "@/types/session";
+import type {
+  CoachPanelState,
+  LiveInsight,
+  OmniDebugState,
+  SessionSetup,
+  TranscriptChunk,
+} from "@/types/session";
 
 interface SessionState {
   error: string | null;
@@ -42,6 +48,7 @@ const PCM_CHANNELS = 1;
 const PCM_CHUNK_DURATION_MS = 100;
 const PCM_SAMPLE_RATE = 16000;
 const PCM_WORKLET_MODULE_PATH = "/audio/pcm-capture.worklet.js";
+const VIDEO_FRAME_INTERVAL_MS = 1000;
 const PARTIAL_FILLER_TOKENS = {
   en: new Set(["um", "uh", "well", "so"]),
   zh: new Set(["嗯", "啊", "额", "呃", "然后", "就是", "哦", "诶", "欸", "哎", "唉"]),
@@ -269,13 +276,10 @@ function isWeakStandalonePartial(partialText: string, language: SessionSetup["la
   return isFillerPartial(trimmedPartial, language);
 }
 
-
 export function useMockSession(setup: SessionSetup) {
   const socketRef = useRef<WebSocket | null>(null);
   const mediaTimerRef = useRef<number | null>(null);
-  const poseTimerRef = useRef<number | null>(null);
   const videoFrameProviderRef = useRef<(() => string | null) | null>(null);
-  const poseSnapshotProviderRef = useRef<(() => PoseSnapshot | null) | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -291,10 +295,8 @@ export function useMockSession(setup: SessionSetup) {
   const [transcript, setTranscript] = useState<TranscriptChunk[]>([]);
   const [activeTranscript, setActiveTranscript] = useState<TranscriptChunk | null>(null);
   const [insights, setInsights] = useState<LiveInsight[]>([]);
-  const [latestPoseSnapshot, setLatestPoseSnapshot] = useState<PoseSnapshot | null>(null);
-  const [poseDebug, setPoseDebug] = useState<PoseDebugState | null>(null);
-  const [poseSnapshotCount, setPoseSnapshotCount] = useState(0);
-  const [lastPoseSnapshotAt, setLastPoseSnapshotAt] = useState<number | null>(null);
+  const [coachPanel, setCoachPanel] = useState<CoachPanelState | null>(null);
+  const [omniDebug, setOmniDebug] = useState<OmniDebugState | null>(null);
   const [sessionState, setSessionState] = useState<SessionState>(idleSessionState);
   const transcriptStateRef = useRef<TranscriptStateRef>(createEmptyTranscriptState());
 
@@ -307,10 +309,6 @@ export function useMockSession(setup: SessionSetup) {
     if (mediaTimerRef.current !== null) {
       window.clearInterval(mediaTimerRef.current);
       mediaTimerRef.current = null;
-    }
-    if (poseTimerRef.current !== null) {
-      window.clearInterval(poseTimerRef.current);
-      poseTimerRef.current = null;
     }
   }, []);
 
@@ -327,10 +325,8 @@ export function useMockSession(setup: SessionSetup) {
     setTranscript([]);
     setActiveTranscript(null);
     setInsights([]);
-    setLatestPoseSnapshot(null);
-    setPoseDebug(null);
-    setPoseSnapshotCount(0);
-    setLastPoseSnapshotAt(null);
+    setCoachPanel(null);
+    setOmniDebug(null);
     setSessionState(idleSessionState);
   }, []);
 
@@ -350,24 +346,6 @@ export function useMockSession(setup: SessionSetup) {
       type: "video_frame",
       timestamp_ms: timestamp,
       image_base64: videoFrameProviderRef.current?.() ?? undefined,
-    });
-  }, [sendRealtimeMessage]);
-
-  const sendPoseSnapshotEvent = useCallback(() => {
-    const snapshot = poseSnapshotProviderRef.current?.() ?? null;
-    if (!snapshot) {
-      return;
-    }
-
-    const timestampMs = Date.now();
-    setLatestPoseSnapshot(snapshot);
-    setPoseSnapshotCount((previous) => previous + 1);
-    setLastPoseSnapshotAt(timestampMs);
-
-    sendRealtimeMessage({
-      type: "pose_snapshot",
-      timestamp_ms: timestampMs,
-      pose_snapshot: snapshot,
     });
   }, [sendRealtimeMessage]);
 
@@ -721,9 +699,7 @@ export function useMockSession(setup: SessionSetup) {
         setIsRunning(true);
         sendRealtimeMessage({ type: "start_stream" });
         sendVideoFrameEvent();
-        sendPoseSnapshotEvent();
-        mediaTimerRef.current = window.setInterval(sendVideoFrameEvent, 4000);
-        poseTimerRef.current = window.setInterval(sendPoseSnapshotEvent, 500);
+        mediaTimerRef.current = window.setInterval(sendVideoFrameEvent, VIDEO_FRAME_INTERVAL_MS);
 
         try {
           await startAudioCapture();
@@ -778,8 +754,13 @@ export function useMockSession(setup: SessionSetup) {
           return;
         }
 
-        if (payload.type === "pose_debug" && payload.poseDebug) {
-          setPoseDebug(payload.poseDebug);
+        if (payload.type === "coach_panel" && payload.coachPanel) {
+          setCoachPanel(payload.coachPanel);
+          return;
+        }
+
+        if (payload.type === "omni_debug" && payload.omniDebug) {
+          setOmniDebug(payload.omniDebug);
           return;
         }
 
@@ -831,7 +812,6 @@ export function useMockSession(setup: SessionSetup) {
     clearActiveTranscript,
     discardAudioCapture,
     sendRealtimeMessage,
-    sendPoseSnapshotEvent,
     sendVideoFrameEvent,
     sessionState.isConnecting,
     sessionState.isFinalizing,
@@ -886,14 +866,8 @@ export function useMockSession(setup: SessionSetup) {
     clearSessionView();
   }, [clearMediaTimer, clearSessionView, clearSocket, discardAudioCapture]);
 
-  const currentInsight = insights[0] ?? null;
-
   const registerVideoFrameProvider = useCallback((provider: () => string | null) => {
     videoFrameProviderRef.current = provider;
-  }, []);
-
-  const registerPoseSnapshotProvider = useCallback((provider: () => PoseSnapshot | null) => {
-    poseSnapshotProviderRef.current = provider;
   }, []);
 
   const statusText = useMemo(() => {
@@ -925,23 +899,19 @@ export function useMockSession(setup: SessionSetup) {
   }, [clearMediaTimer, clearSocket, discardAudioCapture]);
 
   return {
-    currentInsight,
+    coachPanel,
     elapsedSeconds,
     insights,
     isLoading: sessionState.isConnecting || sessionState.isFinalizing,
-    lastPoseSnapshotAt,
-    latestPoseSnapshot,
     error: sessionState.error,
     finish,
     isRunning,
     activeTranscript,
-    poseDebug,
-    poseSnapshotCount,
+    omniDebug,
     sessionId: sessionState.sessionId,
     socketStatus: sessionState.socketStatus,
     statusText,
     transcript,
-    registerPoseSnapshotProvider,
     flushTranscript,
     registerVideoFrameProvider,
     start,

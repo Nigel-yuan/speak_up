@@ -29,7 +29,7 @@ class DebugStore:
         with (session_dir / "events.jsonl").open("a", encoding="utf-8") as file:
             file.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
-    def append_stt_provider_event(
+    def append_provider_event(
         self,
         session_id: str,
         provider: str,
@@ -38,7 +38,7 @@ class DebugStore:
         summary: dict[str, Any] | None = None,
     ) -> None:
         event: dict[str, Any] = {
-            "type": "stt_provider_event",
+            "type": "provider_event",
             "provider": provider,
             "stage": stage,
             "payload": payload,
@@ -46,6 +46,16 @@ class DebugStore:
         if summary:
             event["summary"] = summary
         self.append_event(session_id, event)
+
+    def append_stt_provider_event(
+        self,
+        session_id: str,
+        provider: str,
+        stage: str,
+        payload: dict[str, Any],
+        summary: dict[str, Any] | None = None,
+    ) -> None:
+        self.append_provider_event(session_id, provider, stage, payload, summary)
 
     def save_audio_chunk(self, session_id: str, chunk_index: int, payload: str | None, mime_type: str | None) -> str:
         session_dir = self._session_dir(session_id) / "audio"

@@ -21,6 +21,7 @@
 - 阿里云 `qwen3-asr-flash-realtime`
 - 实时 `transcript_partial` / `transcript_final`
 - transcript 时间轴
+- 阿里云 `Qwen3.5-Omni-Realtime` 驱动的 `AI Live Coach`
 - debug 开关
 - debug 模式下的 `session_full.webm`
 - 基于 transcript 的 replay 页面
@@ -29,20 +30,17 @@
 
 - `GET /api/report`
 - `GET /api/history`
-- 大模型级视觉理解
 - 语音播报
 - session 持久化
 
 ### 已接入但仍然偏规则化
 
-- 前端本地姿态识别
-- 后端姿态聚合
-- 基于姿态规则的 `live_insight`
-- `Pose Debug` 本地/服务端可视化
+- transcript 规则分析
+- `coach_panel` 的 summary 与三维卡片聚合
 
 一句话总结：
 
-当前系统已经完成“真实实时转写 + 姿态识别 V1”这两条主链路，但报告、历史和大模型视觉理解仍然是原型层实现。
+当前系统已经完成“真实实时转写 + Omni Live Coach V1”两条主链路，但报告、历史和语音播报仍然是原型层实现。
 
 ## 当前架构
 
@@ -57,8 +55,8 @@ flowchart LR
     D --> E
 
     E --> F[Aliyun Realtime ASR]
-    E --> G[Posture Vision Service]
-    E --> H[Mock Coaching Service]
+    E --> G[Aliyun Omni Coach Service]
+    E --> H[Coach Panel Service]
     E --> I[(Static Report and History Data)]
     E --> J[(Optional Debug Store)]
 ```
@@ -89,16 +87,19 @@ flowchart LR
 
 - `start_stream`
 
-### 3. 启动实时 ASR
+### 3. 启动实时 provider
 
 `start_stream` 到达后，`SessionManager` 会：
 
-- 为当前 session 建立阿里云 realtime 连接
-- 发送 `session.update`
-- 使用 `server_vad`
-- 开始接收 provider partial / final
+- 为当前 session 建立阿里云 ASR 连接
+- 在同一个 Python 进程里并行建立 Omni coach 连接
+- 两条连接各自发送 `session.update`
+- 两条连接都使用 `server_vad`
 
-阿里云 provider 当前由 [stt_service.py](/Users/bytedance/my_project/speak_up/backend/app/services/stt_service.py) 管理。
+对应 provider 当前由这两个模块管理：
+
+- [stt_service.py](/Users/bytedance/my_project/speak_up/backend/app/services/stt_service.py)
+- [omni_service.py](/Users/bytedance/my_project/speak_up/backend/app/services/omni_service.py)
 
 ### 4. 音频上行
 
@@ -121,11 +122,25 @@ flowchart LR
 }
 ```
 
-后端收到后直接转发给阿里云：
+后端收到后会并行分发：
 
-- `input_audio_buffer.append`
+- 给 `qwen3-asr-flash-realtime` 发送 `input_audio_buffer.append`
+- 给 `Qwen3.5-Omni-Realtime` 发送 `input_audio_buffer.append`
 
-### 5. transcript 回推
+这两条 provider 逻辑上并行，但当前仍然运行在同一个 FastAPI 进程里。
+
+### 5. 视频帧上行
+
+前端当前大约每 `1s` 发送一张 JPEG 帧。
+
+这条链路同时服务于两件事：
+
+- debug 模式下保存 `frame_000x.jpg`
+- 非 debug 模式下作为 Omni coach 的视觉输入
+
+为适配 Omni 官方建议，前端当前会把截图压到不高于 `1280x720`，并维持低频关键帧输入，而不是原始视频流。
+
+### 6. transcript 回推
 
 阿里云返回的关键事件有：
 
@@ -142,7 +157,34 @@ flowchart LR
 
 时间戳优先使用阿里云返回的 `speech_started / speech_stopped`，如果 provider 没给，再退回本地 elapsed time 兜底。
 
-### 6. 结束 session
+### 7. Omni Live Coach 回推
+
+`Qwen3.5-Omni-Realtime` 当前只配置文本输出，不负责实时字幕，也不负责语音回复。
+
+运行方式：
+
+- 音频与视频帧持续流式输入同一个 realtime session
+- `server_vad` 负责决定何时触发一轮 coach 响应
+- 服务端监听 `response.text.delta` / `response.text.done`
+- 当前只在 `response.text.done` 时做 JSON 解析
+- 解析成功后先映射成内部 coach 信号，再聚合进固定三维 `coach_panel`
+
+当前 coach 主面板的内部来源有两类：
+
+- `speech-rule`
+- `omni-coach`
+
+右侧主 UI 不再直接消费滚动 `live_insight`，而是消费统一的 `coach_panel` 状态：
+
+- 顶部一条当前重点建议
+- 三张固定维度卡
+  - `body_expression`
+  - `voice_pacing`
+  - `content_expression`
+
+`live_insight` 仍然保留，但主要服务 debug 和过渡期兼容。
+
+### 8. 结束 session
 
 前端点击结束时：
 
@@ -244,19 +286,17 @@ debug 链路只服务于回放和排障：
 - 保存 `frame_000x.jpg`
 - 在 pause / finish 时保存 `session_full.webm`
 
-### Pose Debug 开关
+### Coach Debug 开关
 
-`Pose Debug` 和 `Debug Dump` 是两套不同目的的开关：
+`Coach Debug` 和 `Debug Dump` 是两套不同目的的开关：
 
 - `Debug Dump`：控制是否写磁盘证据
-- `Pose Debug`：控制是否在前端显示姿态调试指标
+- `Coach Debug`：控制是否在前端显示模型原始调试信息
 
-`Pose Debug` 打开后：
+`Coach Debug` 打开后：
 
-- 左侧相机区会显示本地 `PoseSnapshot`
-- 右侧分析区会显示后端最近窗口的聚合结果
-
-这套调试信息不依赖后端写文件，适合在线调阈值。
+- 右侧分析区会显示 `Omni Debug · Server`
+- 同时保留最近几条 insight trace，方便核对模型输出和 `coach_panel` 聚合结果
 
 ### debug 目录
 
@@ -333,6 +373,8 @@ backend/debug/<session_id>/
 - `transcript_partial`
 - `transcript_final`
 - `live_insight`
+- `coach_panel`
+- `omni_debug`
 - `ack`
 - `pong`
 - `error`
@@ -354,11 +396,14 @@ backend/debug/<session_id>/
 
 - session 生命周期
 - socket 管理
-- 把前端音频转发给 provider
+- 把前端音频并行转发给 ASR 和 Omni coach
+- 把前端视频帧转发给 Omni coach
 - 把 provider transcript 广播给前端
 - 维护 session 内存态 transcript
-- 广播 `pose_debug`
+- 广播 `coach_panel`
+- 广播 `omni_debug`
 - debug 落盘
+- live insight 与面板状态的统一分发
 
 ### [stt_service.py](/Users/bytedance/my_project/speak_up/backend/app/services/stt_service.py)
 
@@ -370,6 +415,17 @@ backend/debug/<session_id>/
 - 接收并解析 provider 事件
 - 暴露 partial / final / error 回调
 
+### [omni_service.py](/Users/bytedance/my_project/speak_up/backend/app/services/omni_service.py)
+
+负责：
+
+- 管理阿里云 `Qwen3.5-Omni-Realtime` 连接
+- 持续接收 PCM 音频和 JPEG 帧
+- 分别管理 `voice_content` 和 `body_visual` 两条 coach lane
+- 解析 `response.text.done`
+- 把模型输出映射成结构化 `CoachPanelPatch`
+- 对重复 coach patch 做轻量去重
+
 ### [debug_store.py](/Users/bytedance/my_project/speak_up/backend/app/services/debug_store.py)
 
 负责：
@@ -379,15 +435,6 @@ backend/debug/<session_id>/
 - 保存完整录音
 - 保存视频帧
 - 保存 provider 事件和 transcript merge 事件
-
-### [vision_service.py](/Users/bytedance/my_project/speak_up/backend/app/services/vision_service.py)
-
-负责：
-
-- 维护最近姿态窗口
-- 判断 `close_up_mode`
-- 把姿态指标聚合成后端规则判断
-- 返回 `live_insight` 和 `pose_debug`
 
 ## 当前配置项
 
@@ -399,70 +446,38 @@ ALIYUN_REALTIME_ASR_MODEL=qwen3-asr-flash-realtime
 ALIYUN_REALTIME_ASR_URL=wss://dashscope.aliyuncs.com/api-ws/v1/realtime
 ALIYUN_REALTIME_ASR_VAD_THRESHOLD=0.0
 ALIYUN_REALTIME_ASR_SILENCE_DURATION_MS=1200
+ALIYUN_OMNI_COACH_ENABLED=true
+ALIYUN_OMNI_COACH_MODEL=qwen3.5-omni-flash-realtime
+ALIYUN_OMNI_COACH_URL=wss://dashscope.aliyuncs.com/api-ws/v1/realtime
+ALIYUN_OMNI_COACH_VAD_THRESHOLD=0.0
+ALIYUN_OMNI_COACH_SILENCE_DURATION_MS=2000
+ALIYUN_OMNI_BODY_TRIGGER_INTERVAL_MS=1500
 ```
 
 其中：
 
 - `DASHSCOPE_API_KEY` 必填
 - `ALIYUN_REALTIME_ASR_SILENCE_DURATION_MS` 越大，断句越慢，最终句稳定性通常越高
+- `ALIYUN_OMNI_COACH_ENABLED=true` 时，右侧 `AI Live Coach` 会尝试接入 Omni
+- `ALIYUN_OMNI_COACH_SILENCE_DURATION_MS` 控制 `voice_content` 这条 lane 的 VAD 触发节奏
+- `ALIYUN_OMNI_BODY_TRIGGER_INTERVAL_MS` 控制 `body_visual` 这条 lane 的手动视觉刷新频率
 
-## 当前姿态 V1 设计
+## 当前 Live Coach 设计
 
-当前姿态链路不是大模型视觉理解，而是两层结构：
+当前 `AI Live Coach` 已经收敛成“后端统一多模态分析 + 前端固定三维卡片”：
 
-1. 前端 `MediaPipe Pose`
-2. 后端规则聚合
+- 前端只负责上行音频和约 `1s` 一张的视频帧
+- 后端用阿里云 `Qwen3.5-Omni-Realtime` 统一做视觉与语音理解
+- `speech_analysis_service.py` 继续提供一层轻量 transcript 规则分析
+- `coach_panel_service.py` 统一聚合 `body_expression / voice_pacing / content_expression`
 
-### 前端本地特征
-
-前端大约每 `150ms` 跑一次姿态检测，并低频发送 `pose_snapshot`。当前主要提取：
-
-- `bodyPresent`
-- `faceVisible`
-- `handsVisible`
-- `shoulderVisible`
-- `hipVisible`
-- `bodyScale`
-- `centerOffsetX`
-- `shoulderTiltDeg`
-- `torsoTiltDeg`
-- `gestureActivity`
-- `stabilityScore`
-
-### 后端聚合
-
-后端保留最近 `6` 个 `pose_snapshot`，大致覆盖最近 `3s`。在这 3 秒窗口里聚合：
-
-- 身体/脸部/手部/肩膀/髋部可见比例
-- 身体尺度均值
-- 居中偏移均值
-- 肩线/躯干倾斜均值
-- 手势活跃度均值
-- 稳定性均值
-
-### Close-Up Mode
-
-当前姿态 V1 明确支持桌前近景。
-
-当后端判断：
-
-- 肩膀稳定可见
-- 髋部长期不可见
-- 脸部可见度较高
-- 人体尺度偏大
-
-则会进入 `close_up_mode`。
-
-进入该模式后：
-
-- 不再把“看不到髋部”当成异常
-- 姿态提示更偏头肩区域
+当前没有再保留浏览器本地姿态识别运行时链路。
 - 优先判断肩线、居中和上身稳定性
 - “站姿”类文案会改成“上身姿态”或“肩线”
 
 ## 当前限制
 
-- `live_insight` 当前已经接入姿态识别 V1，但仍然是规则驱动
+- `live_insight` 当前已经是“规则姿态 + Omni coach”双来源，但仍未进入报告层
 - `GET /api/report` 仍然返回静态模板
 - `GET /api/history` 仍然返回静态历史数据
 - session 没有落库，后端重启后 replay 会丢
@@ -471,19 +486,19 @@ ALIYUN_REALTIME_ASR_SILENCE_DURATION_MS=1200
 
 ## 后续路线
 
-### Phase 2：大模型视觉分析
+### Phase 2：Omni Coach 深化
 
 目标：
 
-- 让 `video_frame` 真正进入模型
-- 在当前姿态信号之上增加更高层的视觉理解
-- 用关键帧和 transcript 生成更自然的教练反馈
+- 在当前音频 + 帧输入基础上继续调 prompt 和 JSON schema
+- 让 Omni 输出更稳定的 delivery / visual 分类
+- 尝试把姿态规则摘要作为附加上下文输入给 Omni
 
 建议做法：
 
-- 接阿里云多模态实时能力
-- 保持低频关键帧策略
-- 由后端统一聚合 transcript 和视觉信号
+- 保持当前 `1 fps` 关键帧策略
+- 优化 VAD 响应节奏和展示节流
+- 增加 Omni provider debug 可视化
 
 ### Phase 3：语音播报
 

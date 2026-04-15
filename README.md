@@ -1,153 +1,88 @@
 # Speak Up
 
-Speak Up 是一个 AI 演讲训练产品原型，当前重点是把一次训练的核心链路跑通：
+Speak Up 是一个 AI 演讲训练产品原型。当前这版已经跑通了三条主链路：
 
-- 训练前选择场景和语言
-- 训练中采集麦克风和视频帧
-- 实时拿到语音转写结果
-- 训练后查看报告和回放
-- 需要时打开 debug dump，保留排障证据
+- 实时语音转写
+- 实时 AI Live Coach
+- 训练后报告与回放入口
 
-这版不是完整生产系统，但已经不是纯 mock Demo。当前仓库是“真实实时转写 + Omni Live Coach V1 + mock 报告与历史 + 可用 debug/replay”的混合形态。
+这不是完整生产系统，但已经不是纯 mock demo。当前形态是：
 
-## 当前状态
+- 真实实时 ASR：阿里云 `qwen3-asr-flash-realtime`
+- 真实实时 Live Coach：阿里云 `Qwen3.5-Omni-Realtime`
+- 报告、历史、趋势：仍然是原型数据
 
-### 已经是真实能力的部分
+## 当前支持
 
-- 浏览器麦克风采集
-- 浏览器摄像头预览
-- `POST /api/session/start` + `WS /ws/session/:session_id`
-- 前端实时 `PCM 16k mono` 音频上行
-- 后端接入阿里云 `qwen3-asr-flash-realtime`
-- 实时 `transcript_partial` / `transcript_final`
-- transcript 时间轴回放
-- debug 开关
-- debug 模式下的完整录音 `session_full.webm`
-- Qwen3.5-Omni-Realtime 驱动的 `AI Live Coach`
+### 训练模式
 
-### 仍然是 mock 或静态数据的部分
+- 自由演讲
+- 文档演讲 V1
 
-- 报告分数、建议和趋势
-- 历史记录列表
-- 语音播报
-- 数据持久化
+### 演讲场景
 
-### 当前已经接入但仍然偏规则化的部分
+- `host`
+- `guest-sharing`
+- `standup`
 
-- transcript 规则分析
-- `AI Live Coach` 的 summary / 三维卡片聚合逻辑
-
-## 当前支持的功能
-
-### 训练场景
-
-当前内置 3 个场景：
-
-- `host`：主持人场景
-- `guest-sharing`：嘉宾分享场景
-- `standup`：脱口秀场景
-
-每个场景都支持：
+### 语言
 
 - `zh`
 - `en`
 
 ### 训练页
 
-训练页当前支持：
-
+- 麦克风采集
 - 摄像头预览
-- 麦克风权限请求
-- 实时会话创建
-- WebSocket 长连接
 - 实时文字稿
-- 实时分析面板
-- 历史记录侧边栏
+- 固定三维 `AI Live Coach`
+- 历史记录侧栏
 - `开始 / 暂停 / 重置 / 结束并生成报告`
 
-### 实时转写
+### 文档演讲模式 V1
 
-当前实时转写已经接入阿里云实时 ASR：
+当前第一版只做前端演讲辅助，不把文档接进实时评分。
 
-- 前端通过 `AudioWorklet` 采集麦克风音频
-- 音频被重采样到 `PCM 16k mono`
-- 以约 `100ms` 一包发送给后端
-- 后端把音频转发给阿里云 `qwen3-asr-flash-realtime`
-- 阿里云返回 partial / final
-- 前端展示实时字幕和最终文字稿
+已支持：
 
-当前断句主要依赖阿里云 `server_vad`。另外，后端只保留一条很窄的补偿规则：如果 final 结果只是 `嗯 / 哦 / 诶` 这种语气词尾巴，会并回上一句，不单独起一条 transcript。
+- 本地上传 `pdf`
+- 本地上传 `md`
+- 主视区显示文档
+- 右上角悬浮视频小窗
 
-### 回放与 debug
+当前还没做：
 
-训练结束后，报告页可以进入 replay 页面，展示：
+- 文档内容参与实时 AI Live Coach
+- 文档内容参与实时评分
+- 文档内容参与报告生成
 
-- transcript 时间轴
-- debug 音频回放
+## 当前真实链路
+
+### 实时语音转写
+
+- 前端通过 `AudioWorklet` 采集麦克风
+- 重采样到 `PCM 16k mono`
+- 约 `100ms` 一包通过 WebSocket 发给后端
+- 后端转发给阿里云 `qwen3-asr-flash-realtime`
+- 前端消费 `transcript_partial` 和 `transcript_final`
 
 ### AI Live Coach
 
-当前右侧 `AI Live Coach` 走的是“后端统一多模态分析”：
-
-- 实时字幕仍然由 `qwen3-asr-flash-realtime` 提供
-- 阿里云 `Qwen3.5-Omni-Realtime` 负责 `AI Live Coach`
-- 前端只负责上行音频和低频视频帧，不再本地跑姿态小模型
-- 当前前端视频帧已调整为约 `1s` 一张，供 Omni 使用
-
-当前实现里：
-
-- 当前右侧 `AI Live Coach` 已切到固定三维卡片：
+- 前端约 `1s` 发送一张 JPEG 视频帧
+- 后端并行维护两条 Omni coach lane：
+  - `voice_content`
+  - `body_visual`
+- 后端把 Omni patch 和 transcript 规则分析统一聚合成 `coach_panel`
+- 前端右侧固定展示：
   - `肢体 & 表情`
   - `语音语调 & 节奏`
   - `内容 & 表达`
-- 后端通过 `coach_panel` 状态聚合这三项卡片，当前内部来源主要是 `speech-rule` 和 `omni-coach`
 
-### Coach Debug
+### 报告与回放
 
-训练页顶部有单独的 `Coach Debug` 开关，默认关闭。
-
-打开后：
-
-- 右侧 `AI Live Coach` 会显示 `Omni Debug · Server`
-- 同时保留最近几条 `insight trace`，方便核对模型原始输出和面板聚合结果
-
-训练页顶部有 `Debug Dump` 开关，默认关闭。
-
-关闭时：
-
-- 麦克风仍然会正常请求
-- 实时 ASR 仍然正常工作
-- 视频帧仍然正常上行
-- 后端不写 debug 文件
-
-打开时：
-
-- 后端会创建 `backend/debug/<session_id>/`
-- 保存事件日志、音频 chunk、视频帧
-- 在暂停或结束时保存完整可播放录音
-
-debug 目录结构当前大致如下：
-
-```text
-backend/debug/<session_id>/
-  metadata.json
-  events.jsonl
-  audio/
-    audio_0001.pcm
-    audio_0002.pcm
-    ...
-    session_full.webm
-  frames/
-    frame_0001.jpg
-    frame_0002.jpg
-    ...
-```
-
-说明：
-
-- `audio_000x.pcm` 是实时 ASR 主链路的原始 PCM chunk
-- `session_full.webm` 是浏览器可直接回放的完整录音
-- 当前 replay 页优先播放 `session_full.webm`
+- 报告页目前还是静态原型数据
+- 回放页当前以 transcript timeline 为主
+- 真实媒体回放链路暂未接入
 
 ## 本地运行
 
@@ -185,13 +120,19 @@ NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
 python3 -m venv backend/.venv
 source backend/.venv/bin/activate
 pip install -r backend/requirements.txt
-uvicorn app.main:app --reload --app-dir backend --port 8000
 ```
 
-默认地址：
+在仓库根目录启动：
 
-```text
-http://127.0.0.1:8000
+```bash
+backend/.venv/bin/uvicorn app.main:app --reload --app-dir backend --port 8000
+```
+
+或在 `backend/` 目录启动：
+
+```bash
+cd backend
+.venv/bin/uvicorn app.main:app --reload --port 8000
 ```
 
 健康检查：
@@ -200,207 +141,115 @@ http://127.0.0.1:8000
 curl http://127.0.0.1:8000/health
 ```
 
-### 阿里云实时 ASR 配置
+## 环境变量
 
-后端通过环境变量读取阿里云配置：
+最少需要：
 
 ```bash
-export DASHSCOPE_API_KEY='sk-你的key'
-export ALIYUN_REALTIME_ASR_MODEL='qwen3-asr-flash-realtime'
-export ALIYUN_REALTIME_ASR_URL='wss://dashscope.aliyuncs.com/api-ws/v1/realtime'
-export ALIYUN_REALTIME_ASR_VAD_THRESHOLD='0.0'
-export ALIYUN_REALTIME_ASR_SILENCE_DURATION_MS='1200'
-export ALIYUN_OMNI_COACH_ENABLED='true'
-export ALIYUN_OMNI_COACH_MODEL='qwen3.5-omni-flash-realtime'
-export ALIYUN_OMNI_COACH_URL='wss://dashscope.aliyuncs.com/api-ws/v1/realtime'
-export ALIYUN_OMNI_COACH_VAD_THRESHOLD='0.0'
-export ALIYUN_OMNI_COACH_SILENCE_DURATION_MS='650'
+DASHSCOPE_API_KEY=sk-xxx
+NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
 ```
 
-如果你修改了这些变量，必须重启后端进程。
+常用可选项：
 
-## 使用方式
+```bash
+ALIYUN_REALTIME_ASR_MODEL=qwen3-asr-flash-realtime
+ALIYUN_REALTIME_ASR_URL=wss://dashscope.aliyuncs.com/api-ws/v1/realtime
 
-### 常规训练
-
-1. 启动前后端
-2. 打开 `http://localhost:3000`
-3. 选择场景和语言
-4. 保持 `Debug Dump` 关闭
-5. 点击开始
-6. 允许浏览器访问麦克风和摄像头
-7. 观察实时文字稿
-8. 点击暂停、重置或结束并生成报告
-
-### Debug 训练
-
-1. 开始前打开 `Debug Dump`
-2. 进行一次训练
-3. 暂停或结束
-4. 到 `backend/debug/<session_id>/` 查看证据
-5. 如果需要回放，优先使用 `session_full.webm`
-
-## 项目结构
-
-```text
-.
-├── src/
-│   ├── app/
-│   │   ├── page.tsx
-│   │   ├── report/page.tsx
-│   │   └── session/
-│   │       ├── page.tsx
-│   │       └── [sessionId]/replay/page.tsx
-│   ├── components/
-│   │   ├── report/
-│   │   ├── session/
-│   │   └── ui/
-│   ├── hooks/
-│   │   └── useMockSession.ts
-│   ├── lib/
-│   │   └── api.ts
-│   └── types/
-│       ├── report.ts
-│       └── session.ts
-├── public/
-│   └── audio/pcm-capture.worklet.js
-├── backend/
-│   ├── app/
-│   │   ├── data/
-│   │   ├── services/
-│   │   │   ├── coach_panel_service.py
-│   │   │   ├── debug_store.py
-│   │   │   ├── omni_service.py
-│   │   │   ├── session_manager.py
-│   │   │   ├── speech_analysis_service.py
-│   │   │   ├── stt_service.py
-│   │   ├── main.py
-│   │   └── schemas.py
-│   ├── REALTIME_ARCHITECTURE.md
-│   └── requirements.txt
-├── .env.example
-├── AGENTS.md
-└── README.md
+ALIYUN_OMNI_COACH_ENABLED=true
+ALIYUN_OMNI_COACH_MODEL=qwen3.5-omni-flash-realtime
+ALIYUN_OMNI_COACH_URL=wss://dashscope.aliyuncs.com/api-ws/v1/realtime
+ALIYUN_OMNI_COACH_SILENCE_DURATION_MS=2000
+ALIYUN_OMNI_BODY_TRIGGER_INTERVAL_MS=1500
 ```
 
-说明：
+## 关键接口
 
-- `useMockSession.ts` 名字还保留着历史命名，但内部已经不是纯 mock hook
-- `stt_service.py` 当前是真实阿里云 ASR adapter
-- `omni_service.py` 负责 `AI Live Coach` 的两条 Omni lane
-- `coach_panel_service.py` 负责三维卡片聚合
-- `speech_analysis_service.py` 负责 transcript 规则分析
-
-## 系统架构
-
-### 高层结构
-
-```mermaid
-flowchart LR
-    A[Browser UI] -->|start session| B[FastAPI Session API]
-    A <-->|session channel| C[Realtime Gateway]
-    C --> D[Session Manager]
-    D --> E[Aliyun Realtime ASR]
-    D --> F[Aliyun Omni Coach]
-    D --> G[Coach Panel Service]
-    D --> H[(Static History and Report Data)]
-    D --> I[(Optional Debug Store)]
-```
-
-### 核心数据流
-
-1. 前端通过 REST 创建 session。
-2. 前端建立 WebSocket，并发送 `start_stream`。
-3. 前端开始采集麦克风 PCM 音频并上行 `audio_chunk`。
-4. 后端 `SessionManager` 把 chunk 转发到阿里云实时 ASR。
-5. 阿里云返回 partial / final transcript。
-6. 后端把结果映射为 `transcript_partial` / `transcript_final` 回推给前端。
-7. 前端更新实时文字稿和最终 transcript 列表。
-8. 如果打开 debug，浏览器同时保留完整 WebM 录音，并在暂停或结束时上传给后端。
-
-### 双音频链路
-
-当前音频被拆成两条链路：
-
-- 主链路：`PCM 16k mono`，只用于实时 ASR
-- debug 链路：`MediaRecorder -> session_full.webm`，只用于回放和排障
-
-这样做的原因是：
-
-- PCM 更适合低延迟流式识别
-- WebM 更适合本地直接回放
-- 不需要让后端去拼接流式 chunk 成完整媒体文件
-
-## API 概览
-
-### 核心接口
+### HTTP
 
 - `GET /health`
 - `GET /api/scenarios`
+- `GET /api/history`
+- `GET /api/report`
 - `POST /api/session/start`
 - `GET /api/session/{session_id}`
 - `POST /api/session/{session_id}/finish`
 - `GET /api/session/{session_id}/replay`
-- `GET /api/session/{session_id}/media/audio`
-- `POST /api/session/{session_id}/debug/full-audio`
+
+### WebSocket
+
 - `WS /ws/session/{session_id}`
 
-### 当前保留的原型接口
+前端会发送：
 
-这些接口仍然存在，但不属于当前主链路：
+- `start_stream`
+- `audio_chunk`
+- `video_frame`
+- `ping`
 
-- `GET /api/history`
-- `GET /api/report`
-- `GET /api/session-stream`
-- `POST /api/session/{session_id}/inject-transcript`
-- `POST /api/session/{session_id}/inject-insight`
+后端会返回：
 
-## 安全与本地配置
+- `session_status`
+- `transcript_partial`
+- `transcript_final`
+- `coach_panel`
+- `pong`
+- `error`
 
-- 不要把真实 `DASHSCOPE_API_KEY` 写进仓库文件。
-- 本地环境变量请放在 shell 配置或未提交的 `.env.*` 文件里。
-- 仓库当前只保留 `.env.example` 作为示例。
-- `backend/debug/` 和 `backend/.venv/` 已经在 `.gitignore` 中忽略。
+## 页面结构
+
+### 训练页
+
+- 左侧：主视区
+  - 自由演讲：视频主视区
+  - 文档演讲：文档主视区 + 右上角视频小窗
+- 右侧上半：`Live Transcript`
+- 右侧下半：`AI Live Coach`
+
+### AI Live Coach
+
+- 顶部：当前重点
+- 下方：三张固定维度卡
+- 不再使用滚动提示流
 
 ## 当前限制
 
-- 实时 transcript 已经是真实能力
-- posture insight 已经有 V1，但当前仍然是规则驱动，不是多模态大模型
-- 报告页内容仍然按场景读取静态模板，不是根据本次 transcript 生成
-- 历史记录仍然来自静态数据，不是从真实 session 持久化生成
-- session 仍然是内存态，后端重启后会丢失
-- replay 页在拉不到 session 时会退回 demo 数据
-- 当前只支持音频回放，真实视频录制链路还没有接入
+- 报告页还不是按真实 session 生成
+- 历史记录仍然是静态数据
+- 回放页还没有真实视频/音频回放
+- 文档模式当前只做前端预览，不参与实时评分
+- 问答模式还未接入
 
-## 后续扩展
+## 目录说明
 
-### 1. 真实视频理解
+```text
+src/
+  app/
+  components/
+  hooks/
+  lib/
+  types/
 
-- 把 `video_frame` 接到真实视觉或多模态模型
-- 用真实镜头状态替换 mock insight
-- 做目光、姿态、离镜和表达稳定性分析
+backend/
+  app/
+    data/
+    services/
+    main.py
+  requirements.txt
+```
 
-### 2. 真实报告与历史
+当前核心后端服务：
 
-- 基于本次 transcript 和视觉信号生成报告
-- 把 session 摘要、得分和回放信息落库
-- 用真实 session 替换当前静态历史列表
+- `stt_service.py`：实时 ASR
+- `omni_service.py`：Omni coach
+- `speech_analysis_service.py`：基于 transcript 的规则分析
+- `coach_panel_service.py`：统一聚合三维 `coach_panel`
+- `session_manager.py`：session 编排与 fanout
 
-### 3. 语音播报
+## 当前最值得继续做的事
 
-- 接入 TTS 或 Omni 语音输出
-- 支持实时教练播报
-- 增加播放队列和打断控制
-
-### 4. 生产化能力
-
-- 用户体系和鉴权
-- 会话持久化
-- 对象存储
-- 异步任务
-- 指标监控和自动清理策略
-
-## 相关文档
-
-- 实时链路架构：`backend/REALTIME_ARCHITECTURE.md`
-- 协作规范：`AGENTS.md`
+1. 报告页改成按真实 `sessionId` 生成
+2. 文档模式接入报告生成
+3. 问答模式
+4. 真实媒体回放
+5. 数据持久化

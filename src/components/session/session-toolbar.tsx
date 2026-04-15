@@ -1,4 +1,10 @@
-import type { LanguageOption, ScenarioOption, ScenarioType } from "@/types/session";
+import type {
+  LanguageOption,
+  ScenarioOption,
+  ScenarioType,
+  TrainingDocumentAsset,
+  TrainingMode,
+} from "@/types/session";
 
 const languageOptions = [
   { label: "中文", value: "zh" },
@@ -6,40 +12,40 @@ const languageOptions = [
 ] as const;
 
 interface SessionToolbarProps {
-  coachDebugEnabled: boolean;
-  debugEnabled: boolean;
-  debugToggleDisabled?: boolean;
+  documentAsset: TrainingDocumentAsset | null;
   language: LanguageOption;
-  onCoachDebugToggle: () => void;
-  onDebugToggle: () => void;
+  onDocumentClear: () => void;
+  onDocumentPick: () => void;
   onHistoryToggle: () => void;
   onLanguageChange: (language: LanguageOption) => void;
   onScenarioChange: (scenario: ScenarioType) => void;
   onScenarioToggle: () => void;
+  onTrainingModeChange: (mode: TrainingMode) => void;
   scenario: ScenarioType;
   scenarioOpen: boolean;
   scenarios: ScenarioOption[];
+  trainingMode: TrainingMode;
 }
 
 export function SessionToolbar({
-  coachDebugEnabled,
-  debugEnabled,
-  debugToggleDisabled = false,
+  documentAsset,
   language,
-  onCoachDebugToggle,
-  onDebugToggle,
+  onDocumentClear,
+  onDocumentPick,
   onHistoryToggle,
   onLanguageChange,
   onScenarioChange,
   onScenarioToggle,
+  onTrainingModeChange,
   scenario,
   scenarioOpen,
   scenarios,
+  trainingMode,
 }: SessionToolbarProps) {
   const currentScenario = scenarios.find((item) => item.id === scenario) ?? null;
 
   return (
-    <div className="relative flex items-center gap-3">
+    <div className="relative flex flex-wrap items-center gap-3">
       <button
         type="button"
         onClick={onScenarioToggle}
@@ -54,30 +60,58 @@ export function SessionToolbar({
       >
         历史演讲
       </button>
-      <button
-        type="button"
-        onClick={onDebugToggle}
-        disabled={debugToggleDisabled}
-        className={`rounded-full border px-4 py-2 text-sm font-semibold shadow-[0_10px_25px_rgba(15,23,42,0.06)] transition disabled:cursor-not-allowed disabled:opacity-50 ${
-          debugEnabled
-            ? "border-amber-200 bg-amber-50 text-amber-900 hover:bg-amber-100"
-            : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50"
-        }`}
-      >
-        Debug Dump · {debugEnabled ? "开" : "关"}
-      </button>
-      <button
-        type="button"
-        onClick={onCoachDebugToggle}
-        className={`rounded-full border px-4 py-2 text-sm font-semibold shadow-[0_10px_25px_rgba(15,23,42,0.06)] transition ${
-          coachDebugEnabled
-            ? "border-sky-200 bg-sky-50 text-sky-900 hover:bg-sky-100"
-            : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50"
-        }`}
-      >
-        Coach Debug · {coachDebugEnabled ? "开" : "关"}
-      </button>
-
+      <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white p-1 shadow-[0_10px_25px_rgba(15,23,42,0.06)]">
+        <button
+          type="button"
+          onClick={() => onTrainingModeChange("free_speech")}
+          className={`rounded-full px-3 py-2 text-sm font-semibold transition ${
+            trainingMode === "free_speech"
+              ? "bg-slate-950 text-white"
+              : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+          }`}
+        >
+          自由演讲
+        </button>
+        <button
+          type="button"
+          onClick={() => onTrainingModeChange("document_speech")}
+          className={`rounded-full px-3 py-2 text-sm font-semibold transition ${
+            trainingMode === "document_speech"
+              ? "bg-slate-950 text-white"
+              : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+          }`}
+        >
+          文档演讲
+        </button>
+      </div>
+      {trainingMode === "document_speech" ? (
+        <>
+          <button
+            type="button"
+            onClick={onDocumentPick}
+            className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-[0_10px_25px_rgba(15,23,42,0.06)] transition hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-700"
+          >
+            {documentAsset ? "更换文档" : "上传文档"}
+          </button>
+          {documentAsset ? (
+            <>
+              <div className="flex items-center gap-2 rounded-full border border-emerald-100 bg-emerald-50 px-4 py-2 text-sm text-emerald-800 shadow-[0_10px_25px_rgba(15,23,42,0.04)]">
+                <span className="rounded-full bg-white/80 px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-700">
+                  {documentAsset.kind}
+                </span>
+                <span className="max-w-[220px] truncate font-medium">{documentAsset.name}</span>
+              </div>
+              <button
+                type="button"
+                onClick={onDocumentClear}
+                className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 shadow-[0_10px_25px_rgba(15,23,42,0.06)] transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900"
+              >
+                移除文档
+              </button>
+            </>
+          ) : null}
+        </>
+      ) : null}
       {scenarioOpen ? (
         <div className="absolute left-0 top-full z-20 mt-3 w-[360px] rounded-[24px] border border-white/70 bg-white/95 p-3 shadow-[0_18px_45px_rgba(15,23,42,0.12)] backdrop-blur">
           <p className="px-3 pb-2 pt-1 text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">选择场景</p>
@@ -122,13 +156,6 @@ export function SessionToolbar({
                 </button>
               ))}
             </div>
-          </div>
-
-          <div className="mt-3 border-t border-slate-200 px-3 pt-3">
-            <p className="mb-2 text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">Debug</p>
-            <p className="text-xs leading-5 text-slate-500">
-              默认关闭。关闭时仍会正常请求麦克风并进行实时会话，只是不写 debug 日志和 dump 文件。
-            </p>
           </div>
         </div>
       ) : null}

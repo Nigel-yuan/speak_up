@@ -11,14 +11,13 @@ from urllib.parse import quote
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from app.schemas import InsightTone, LanguageOption, LiveInsight, ScenarioType
+from app.schemas import LanguageOption, ScenarioType
 from app.schemas import CoachPanelPatch, CoachPanelPatchDimension
 
 
 @dataclass(frozen=True)
 class OmniCoachUpdate:
     patch: CoachPanelPatch | None = None
-    insight: LiveInsight | None = None
 
 
 OmniInsightCallback = Callable[[OmniCoachUpdate], Awaitable[None]]
@@ -36,7 +35,6 @@ SCENARIO_LABELS: dict[ScenarioType, str] = {
     "standup": "脱口秀或高密度表达",
 }
 
-ALLOWED_TONES: set[str] = {"positive", "neutral", "warning"}
 OmniAnalysisScope = Literal["voice_content", "body_visual"]
 
 
@@ -56,8 +54,6 @@ class AliyunOmniCoachConnection:
     has_received_audio: bool = False
     pending_image_base64: str | None = None
     completed_response_ids: set[str] = field(default_factory=set)
-    last_insight_signature: str | None = None
-    last_insight_title: str | None = None
     last_patch_signature: str | None = None
     last_emitted_at: float = 0.0
     has_received_image: bool = False
@@ -362,45 +358,7 @@ class AliyunOmniCoachService:
             connection.last_patch_signature = self._build_patch_signature(patch)
             connection.last_emitted_at = now
 
-            insight = self._build_debug_insight_from_patch(connection, patch, now)
-            return OmniCoachUpdate(patch=patch, insight=insight)
-
-        title = str(payload.get("title", "")).strip()
-        detail = str(payload.get("detail", "")).strip()
-        tone = str(payload.get("tone", "neutral")).strip().lower()
-        if tone not in ALLOWED_TONES:
-            tone = "neutral"
-
-        if not title or not detail:
-            return None
-
-        if self._should_drop_duplicate(connection, title, detail, tone):
-            return None
-
-        now = monotonic()
-        connection.last_insight_signature = self._build_insight_signature(title, detail)
-        connection.last_insight_title = self._normalize_text(title)
-        connection.last_emitted_at = now
-
-        return OmniCoachUpdate(
-            insight=LiveInsight(
-                id=f"omni-{connection.session_id}-{int(now * 1000)}",
-                title=title,
-                detail=detail,
-                tone=cast(InsightTone, tone),
-                source="omni-coach",
-            )
-        )
-
-    def _should_drop_duplicate(
-        self,
-        connection: AliyunOmniCoachConnection,
-        title: str,
-        detail: str,
-        tone: str,
-    ) -> bool:
-        signature = self._build_insight_signature(title, detail)
-        return connection.last_insight_signature == signature
+            return OmniCoachUpdate(patch=patch)
 
     def _should_drop_patch_duplicate(
         self,
@@ -409,12 +367,6 @@ class AliyunOmniCoachService:
     ) -> bool:
         signature = self._build_patch_signature(patch)
         return connection.last_patch_signature == signature
-
-    @staticmethod
-    def _build_insight_signature(title: str, detail: str) -> str:
-        normalized_title = AliyunOmniCoachService._normalize_text(title)
-        normalized_detail = AliyunOmniCoachService._normalize_text(detail)
-        return f"{normalized_title}|{normalized_detail}"
 
     @staticmethod
     def _build_patch_signature(patch: CoachPanelPatch) -> str:
@@ -492,53 +444,6 @@ class AliyunOmniCoachService:
 
         return CoachPanelPatch(dimensions=dimensions)
 
-    @staticmethod
-    def _build_debug_insight_from_patch(
-        connection: AliyunOmniCoachConnection,
-        patch: CoachPanelPatch,
-        now: float,
-    ) -> LiveInsight | None:
-        priority_order = {
-            "adjust_now": 3,
-            "stable": 2,
-            "doing_well": 1,
-            "analyzing": 0,
-        }
-        chosen = max(
-            patch.dimensions,
-            key=lambda item: (priority_order.get(item.status, 0), -AliyunOmniCoachService._dimension_sort_index(item.id)),
-        )
-        if chosen.status == "analyzing":
-            return None
-
-        tone: InsightTone = "neutral"
-        if chosen.status == "adjust_now":
-            tone = "warning"
-        elif chosen.status == "doing_well":
-            tone = "positive"
-
-        connection.last_insight_signature = AliyunOmniCoachService._build_insight_signature(
-            chosen.headline,
-            chosen.detail,
-        )
-        connection.last_insight_title = AliyunOmniCoachService._normalize_text(chosen.headline)
-
-        return LiveInsight(
-            id=f"omni-{connection.session_id}-{int(now * 1000)}",
-            title=chosen.headline,
-            detail=chosen.detail,
-            tone=tone,
-            source="omni-coach",
-        )
-
-    @staticmethod
-    def _dimension_sort_index(dimension_id: str) -> int:
-        order = {
-            "body_expression": 0,
-            "voice_pacing": 1,
-            "content_expression": 2,
-        }
-        return order.get(dimension_id, 99)
 
     @staticmethod
     def _extract_text_from_response_done(response: dict[str, Any]) -> str:

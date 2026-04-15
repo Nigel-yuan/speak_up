@@ -5,14 +5,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   finishRealtimeSession,
   startRealtimeSession,
-  uploadSessionFullAudio,
   type OutboundRealtimeMessage,
   type RealtimeEvent,
 } from "@/lib/api";
 import type {
   CoachPanelState,
-  LiveInsight,
-  OmniDebugState,
   SessionSetup,
   TranscriptChunk,
 } from "@/types/session";
@@ -43,7 +40,6 @@ const idleSessionState: SessionState = {
   socketStatus: "idle",
 };
 
-const DEBUG_RECORDER_TIMESLICE_MS = 1500;
 const PCM_CHANNELS = 1;
 const PCM_CHUNK_DURATION_MS = 100;
 const PCM_SAMPLE_RATE = 16000;
@@ -280,23 +276,18 @@ export function useMockSession(setup: SessionSetup) {
   const socketRef = useRef<WebSocket | null>(null);
   const mediaTimerRef = useRef<number | null>(null);
   const videoFrameProviderRef = useRef<(() => string | null) | null>(null);
-  const recorderRef = useRef<MediaRecorder | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const monitorGainNodeRef = useRef<GainNode | null>(null);
-  const recordedChunksRef = useRef<Blob[]>([]);
-  const recorderMimeTypeRef = useRef("audio/webm");
   const pendingChunkTasksRef = useRef<Set<Promise<void>>>(new Set());
   const sessionStartedAtRef = useRef<number | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
   const [transcript, setTranscript] = useState<TranscriptChunk[]>([]);
   const [activeTranscript, setActiveTranscript] = useState<TranscriptChunk | null>(null);
-  const [insights, setInsights] = useState<LiveInsight[]>([]);
   const [coachPanel, setCoachPanel] = useState<CoachPanelState | null>(null);
-  const [omniDebug, setOmniDebug] = useState<OmniDebugState | null>(null);
   const [sessionState, setSessionState] = useState<SessionState>(idleSessionState);
   const transcriptStateRef = useRef<TranscriptStateRef>(createEmptyTranscriptState());
 
@@ -312,11 +303,6 @@ export function useMockSession(setup: SessionSetup) {
     }
   }, []);
 
-  const resetRecordedAudio = useCallback(() => {
-    recordedChunksRef.current = [];
-    recorderMimeTypeRef.current = "audio/webm";
-  }, []);
-
   const clearSessionView = useCallback(() => {
     transcriptStateRef.current = createEmptyTranscriptState();
     sessionStartedAtRef.current = null;
@@ -324,9 +310,7 @@ export function useMockSession(setup: SessionSetup) {
     setElapsedSeconds(0);
     setTranscript([]);
     setActiveTranscript(null);
-    setInsights([]);
     setCoachPanel(null);
-    setOmniDebug(null);
     setSessionState(idleSessionState);
   }, []);
 
@@ -348,16 +332,6 @@ export function useMockSession(setup: SessionSetup) {
       image_base64: videoFrameProviderRef.current?.() ?? undefined,
     });
   }, [sendRealtimeMessage]);
-
-  const buildRecordedAudioBlob = useCallback(() => {
-    if (recordedChunksRef.current.length === 0) {
-      return null;
-    }
-
-    return new Blob(recordedChunksRef.current, {
-      type: recorderMimeTypeRef.current || "audio/webm",
-    });
-  }, []);
 
   const waitForPendingChunkTasks = useCallback(async () => {
     const tasks = Array.from(pendingChunkTasksRef.current);
@@ -405,48 +379,18 @@ export function useMockSession(setup: SessionSetup) {
   }, []);
 
   const stopAudioCapture = useCallback(async () => {
-    const recorder = recorderRef.current;
     const stream = audioStreamRef.current;
 
-    recorderRef.current = null;
     audioStreamRef.current = null;
 
     await stopRealtimePcmCapture();
-
-    const stopTracks = () => {
-      stream?.getTracks().forEach((track) => track.stop());
-    };
-
-    if (!recorder) {
-      stopTracks();
-      return buildRecordedAudioBlob();
-    }
-
-    if (recorder.state === "inactive") {
-      stopTracks();
-      return buildRecordedAudioBlob();
-    }
-
-    const stopPromise = new Promise<Blob | null>((resolve) => {
-      recorder.addEventListener(
-        "stop",
-        () => {
-          stopTracks();
-          resolve(buildRecordedAudioBlob());
-        },
-        { once: true },
-      );
-    });
-
-    recorder.stop();
-    return stopPromise;
-  }, [buildRecordedAudioBlob, stopRealtimePcmCapture]);
+    stream?.getTracks().forEach((track) => track.stop());
+  }, [stopRealtimePcmCapture]);
 
   const discardAudioCapture = useCallback(async () => {
     await stopAudioCapture();
     await waitForPendingChunkTasks();
-    resetRecordedAudio();
-  }, [resetRecordedAudio, stopAudioCapture, waitForPendingChunkTasks]);
+  }, [stopAudioCapture, waitForPendingChunkTasks]);
 
   const clearActiveTranscript = useCallback(() => {
     transcriptStateRef.current = {
@@ -515,37 +459,6 @@ export function useMockSession(setup: SessionSetup) {
     };
   }, [setup.language]);
 
-  const finalizeAudioCapture = useCallback(
-    async (reason: "pause" | "finish", sessionId: string | null) => {
-      const audioBlob = await stopAudioCapture();
-      await waitForPendingChunkTasks();
-
-      if (!setup.debugEnabled) {
-        resetRecordedAudio();
-        return;
-      }
-
-      if (!audioBlob || audioBlob.size === 0) {
-        resetRecordedAudio();
-        return;
-      }
-
-      if (!sessionId) {
-        resetRecordedAudio();
-        return;
-      }
-
-      try {
-        await uploadSessionFullAudio(sessionId, audioBlob, reason);
-      } catch {
-        throw new Error("完整调试录音保存失败");
-      } finally {
-        resetRecordedAudio();
-      }
-    },
-    [resetRecordedAudio, setup.debugEnabled, stopAudioCapture, waitForPendingChunkTasks],
-  );
-
   const sendPcmChunk = useCallback(
     (samples: Float32Array, sourceRate: number) => {
       const task = Promise.resolve().then(() => {
@@ -580,30 +493,6 @@ export function useMockSession(setup: SessionSetup) {
   const startAudioCapture = useCallback(async () => {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     audioStreamRef.current = stream;
-    resetRecordedAudio();
-
-    if (setup.debugEnabled) {
-      if (typeof MediaRecorder === "undefined") {
-        stream.getTracks().forEach((track) => track.stop());
-        throw new Error("当前浏览器不支持调试录音");
-      }
-
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus"
-        : "audio/webm";
-      recorderMimeTypeRef.current = mimeType;
-
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-      recorderRef.current = recorder;
-      recorder.addEventListener("dataavailable", (event) => {
-        if (!event.data || event.data.size === 0) {
-          return;
-        }
-
-        recordedChunksRef.current.push(event.data);
-      });
-      recorder.start(DEBUG_RECORDER_TIMESLICE_MS);
-    }
 
     try {
       const audioContext = new AudioContext({ sampleRate: PCM_SAMPLE_RATE });
@@ -641,15 +530,12 @@ export function useMockSession(setup: SessionSetup) {
 
       await audioContext.resume();
     } catch (error) {
-      recorderRef.current?.stop();
-      recorderRef.current = null;
       audioStreamRef.current?.getTracks().forEach((track) => track.stop());
       audioStreamRef.current = null;
       await stopRealtimePcmCapture();
-      resetRecordedAudio();
       throw error;
     }
-  }, [resetRecordedAudio, sendPcmChunk, setup.debugEnabled, stopRealtimePcmCapture]);
+  }, [sendPcmChunk, stopRealtimePcmCapture]);
 
   useEffect(() => {
     if (!isRunning) {
@@ -683,7 +569,7 @@ export function useMockSession(setup: SessionSetup) {
     });
 
     try {
-      const session = await startRealtimeSession(setup.scenarioId, setup.language, setup.debugEnabled);
+      const session = await startRealtimeSession(setup.scenarioId, setup.language);
       const socket = new WebSocket(session.websocketUrl);
       socketRef.current = socket;
 
@@ -718,7 +604,6 @@ export function useMockSession(setup: SessionSetup) {
         const payload = JSON.parse(event.data) as RealtimeEvent;
         const partialText = payload.text ?? null;
         const transcriptChunk = payload.chunk;
-        const liveInsight = payload.insight;
 
         if (payload.type === "transcript_partial" && partialText) {
           const currentState = transcriptStateRef.current;
@@ -749,18 +634,8 @@ export function useMockSession(setup: SessionSetup) {
           return;
         }
 
-        if (payload.type === "live_insight" && liveInsight) {
-          setInsights((previous) => [liveInsight, ...previous].slice(0, 4));
-          return;
-        }
-
         if (payload.type === "coach_panel" && payload.coachPanel) {
           setCoachPanel(payload.coachPanel);
-          return;
-        }
-
-        if (payload.type === "omni_debug" && payload.omniDebug) {
-          setOmniDebug(payload.omniDebug);
           return;
         }
 
@@ -815,7 +690,6 @@ export function useMockSession(setup: SessionSetup) {
     sendVideoFrameEvent,
     sessionState.isConnecting,
     sessionState.isFinalizing,
-    setup.debugEnabled,
     setup.language,
     setup.scenarioId,
     startAudioCapture,
@@ -828,15 +702,16 @@ export function useMockSession(setup: SessionSetup) {
     setSessionState((previous) => ({ ...previous, error: null, isFinalizing: true }));
 
     try {
-      await finalizeAudioCapture("pause", sessionState.sessionId);
+      await stopAudioCapture();
+      await waitForPendingChunkTasks();
     } catch (error) {
-      const message = error instanceof Error ? error.message : "完整调试录音保存失败";
+      const message = error instanceof Error ? error.message : "暂停会话失败";
       setSessionState((previous) => ({ ...previous, error: message }));
       throw error;
     } finally {
       setSessionState((previous) => ({ ...previous, isFinalizing: false }));
     }
-  }, [clearActiveTranscript, clearMediaTimer, finalizeAudioCapture, sessionState.sessionId]);
+  }, [clearActiveTranscript, clearMediaTimer, stopAudioCapture, waitForPendingChunkTasks]);
 
   const finish = useCallback(async () => {
     clearActiveTranscript();
@@ -845,7 +720,8 @@ export function useMockSession(setup: SessionSetup) {
     setSessionState((previous) => ({ ...previous, error: null, isFinalizing: true }));
 
     try {
-      await finalizeAudioCapture("finish", sessionState.sessionId);
+      await stopAudioCapture();
+      await waitForPendingChunkTasks();
       if (sessionState.sessionId) {
         await finishRealtimeSession(sessionState.sessionId);
       }
@@ -857,7 +733,7 @@ export function useMockSession(setup: SessionSetup) {
     } finally {
       setSessionState((previous) => ({ ...previous, isFinalizing: false }));
     }
-  }, [clearActiveTranscript, clearMediaTimer, clearSocket, finalizeAudioCapture, sessionState.sessionId]);
+  }, [clearActiveTranscript, clearMediaTimer, clearSocket, sessionState.sessionId, stopAudioCapture, waitForPendingChunkTasks]);
 
   const reset = useCallback(async () => {
     clearMediaTimer();
@@ -880,15 +756,15 @@ export function useMockSession(setup: SessionSetup) {
     }
 
     if (sessionState.isFinalizing) {
-      return setup.debugEnabled ? "正在保存完整调试录音..." : "正在结束会话...";
+      return "正在结束会话...";
     }
 
     if (sessionState.sessionId) {
-      return setup.debugEnabled ? `Debug Session: ${sessionState.sessionId}` : `Session: ${sessionState.sessionId}`;
+      return `Session: ${sessionState.sessionId}`;
     }
 
     return null;
-  }, [sessionState.error, sessionState.isConnecting, sessionState.isFinalizing, sessionState.sessionId, setup.debugEnabled]);
+  }, [sessionState.error, sessionState.isConnecting, sessionState.isFinalizing, sessionState.sessionId]);
 
   useEffect(() => {
     return () => {
@@ -901,13 +777,11 @@ export function useMockSession(setup: SessionSetup) {
   return {
     coachPanel,
     elapsedSeconds,
-    insights,
     isLoading: sessionState.isConnecting || sessionState.isFinalizing,
     error: sessionState.error,
     finish,
     isRunning,
     activeTranscript,
-    omniDebug,
     sessionId: sessionState.sessionId,
     socketStatus: sessionState.socketStatus,
     statusText,

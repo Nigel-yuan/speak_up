@@ -94,18 +94,16 @@
 4. 展示层
    - 顶部一条重点建议
    - 三张固定维度卡
-   - Debug 区单独展示
+   - 内部诊断区单独展示
 
 ### 新旧共存策略
 
-本期不要直接删掉 `LiveInsight`。
+本期可以先保留 `LiveInsight` 数据结构做静态 mock 和过渡兼容，但训练页主 UI 不再依赖它。
 
 建议：
 
-- `LiveInsight` 继续保留，主要服务 debug 和过渡期兼容
-- 新增 `coach_panel` 事件，作为右侧主 UI 的唯一输入
-
-这样可以避免一次性重写太多逻辑。
+- `coach_panel` 作为右侧主 UI 的唯一输入
+- 旧的 `LiveInsight` 只保留在静态 demo 数据层
 
 ---
 
@@ -276,7 +274,7 @@ Omni 在这一维的角色：
 
 原因：
 
-- `SessionManager` 现在已经在负责 websocket、provider fanout、debug、transcript、pose、omni 分发
+- `SessionManager` 现在已经在负责 websocket、provider fanout、transcript 和 omni 分发
 - 再把面板状态机塞进去，会继续膨胀
 
 所以建议：
@@ -507,16 +505,16 @@ Omni 在这一维的角色：
    - 新增 `CoachPanelState`
    - 新增 `CoachDimensionState`
    - 新增 `CoachSummary`
-   - 保留 `LiveInsight` 兼容过渡期
+   - `LiveInsight` 仅保留在静态 demo 数据层
 
 2. `src/hooks/useMockSession.ts`
    - 新增 `coachPanel` 状态
    - 监听新的 `coach_panel` websocket 事件
-   - `currentInsight` / `insights` 继续保留给 debug 或过渡期
+   - 不再要求训练页保留 `currentInsight` / `insights`
 
 3. `src/components/session/live-analysis-panel.tsx`
    - 从“滚动 list + 主卡片”
-   - 改成“顶部 summary + 3 张固定维度卡 + debug 区”
+   - 改成“顶部 summary + 3 张固定维度卡 + 内部诊断区”
 
 ### 推荐的前端渲染结构
 
@@ -526,19 +524,17 @@ AI Live Coach
   DimensionCard(body_expression)
   DimensionCard(voice_pacing)
   DimensionCard(content_expression)
-  DebugSection(optional)
+  DiagnosticsSection(optional)
 ```
 
 ### 过渡期建议
 
-第一版先不删 insight 历史。
+第一版就让主 UI 只显示 `coach_panel`。
 
-建议：
+如果需要留排障视图：
 
-- 主 UI 只显示 `coach_panel`
-- insight 历史只在 debug 打开时展示
-
-这样回滚成本最低。
+- 只放到内部诊断区
+- 不再作为用户主视图的一部分
 
 ---
 
@@ -644,12 +640,12 @@ class CoachPanelEvent(BaseModel):
 
 并接进 `CoachPanelService`
 
-### Phase 5：把旧 insight feed 降级为 debug-only
+### Phase 5：彻底收掉旧 insight feed
 
 最后才做：
 
 - 主 UI 不再依赖 `LiveInsight`
-- `LiveInsight` 只在 debug 中保留
+- 旧 insight feed 只保留在静态 demo 数据层或直接删除
 
 ---
 

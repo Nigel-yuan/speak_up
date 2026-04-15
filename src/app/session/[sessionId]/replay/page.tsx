@@ -196,7 +196,7 @@ export default function SessionReplayPage({ params }: { params: Promise<{ sessio
             )
           ) : (
             <div className="flex aspect-video items-center justify-center rounded-3xl border border-dashed border-white/20 bg-white/5 px-6 text-center text-sm leading-7 text-slate-300">
-              当前会话还没有可播放媒体。打开 Debug 后完成一次练习，会先生成音频回放；真实视频录制链路后续接入。
+              当前会话还没有可播放媒体。这一版回放先保证文字稿时间轴可用，真实音视频回放链路后续接入。
             </div>
           )}
         </Card>

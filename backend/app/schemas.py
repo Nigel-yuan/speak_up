@@ -16,9 +16,7 @@ RealtimeEventType = Literal[
     "session_status",
     "transcript_partial",
     "transcript_final",
-    "live_insight",
     "coach_panel",
-    "omni_debug",
     "pong",
     "ack",
     "error",
@@ -28,9 +26,6 @@ ClientMessageType = Literal[
     "start_stream",
     "audio_chunk",
     "video_frame",
-    "inject_partial",
-    "inject_transcript",
-    "inject_insight",
 ]
 
 
@@ -95,23 +90,9 @@ class CoachPanelPatch(BaseModel):
     dimensions: list[CoachPanelPatchDimension] = []
 
 
-class OmniDebugState(BaseModel):
-    configured: bool
-    connected: bool
-    sessionUpdated: bool
-    responseCount: int = 0
-    insightCount: int = 0
-    lastStage: str | None = None
-    lastEventType: str | None = None
-    lastTextPreview: str | None = None
-    lastInsightTitle: str | None = None
-    lastError: str | None = None
-
-
 class SessionSetup(BaseModel):
     scenarioId: ScenarioType
     language: LanguageOption
-    debugEnabled: bool = False
 
 
 class RadarMetric(BaseModel):
@@ -158,17 +139,14 @@ class SessionStreamFrame(BaseModel):
 class StartSessionRequest(BaseModel):
     scenarioId: ScenarioType
     language: LanguageOption
-    debugEnabled: bool = False
 
 
 class RealtimeSession(BaseModel):
     sessionId: str
     scenarioId: ScenarioType
     language: LanguageOption
-    debugEnabled: bool = False
     status: SessionStatus
     transcriptCount: int = 0
-    insightCount: int = 0
     audioChunkCount: int = 0
     videoFrameCount: int = 0
 
@@ -184,11 +162,6 @@ class SessionReplay(BaseModel):
     mediaUrl: str | None = None
     mediaType: Literal["audio", "video"] | None = None
     transcript: list[TranscriptChunk]
-
-
-class DebugAudioUploadResponse(BaseModel):
-    path: str
-    sizeBytes: int
 
 
 class RealtimeStatusEvent(BaseModel):
@@ -208,19 +181,9 @@ class TranscriptFinalEvent(BaseModel):
     replacePrevious: bool = False
 
 
-class LiveInsightEvent(BaseModel):
-    type: Literal["live_insight"] = "live_insight"
-    insight: LiveInsight
-
-
 class CoachPanelEvent(BaseModel):
     type: Literal["coach_panel"] = "coach_panel"
     coachPanel: CoachPanelState
-
-
-class OmniDebugEvent(BaseModel):
-    type: Literal["omni_debug"] = "omni_debug"
-    omniDebug: OmniDebugState
 
 
 class PongEvent(BaseModel):
@@ -245,20 +208,3 @@ class ClientMessage(BaseModel):
     mime_type: str | None = None
     sample_rate_hz: int | None = None
     channels: int | None = None
-    text: str | None = None
-    title: str | None = None
-    detail: str | None = None
-    tone: InsightTone | None = None
-    timestamp_label: str | None = None
-
-
-class InjectTranscriptRequest(BaseModel):
-    text: str
-    timestampLabel: str
-    speaker: TranscriptSpeaker = "user"
-
-
-class InjectInsightRequest(BaseModel):
-    title: str
-    detail: str
-    tone: InsightTone = "neutral"

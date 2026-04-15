@@ -2,13 +2,10 @@ from dataclasses import dataclass
 
 from app.schemas import (
     CoachPanelPatch,
-    CoachPanelPatchDimension,
     CoachDimensionState,
     CoachPanelState,
     CoachSummary,
-    InsightTone,
     LanguageOption,
-    LiveInsight,
 )
 from app.services.speech_analysis_service import SpeechPanelUpdate
 
@@ -174,32 +171,6 @@ class CoachPanelService:
             ),
         )
 
-    @staticmethod
-    def build_debug_insight_from_patch(patch: CoachPanelPatch, insight_id: str) -> LiveInsight | None:
-        if not patch.dimensions:
-            return None
-
-        priority_order = {
-            "adjust_now": 3,
-            "stable": 2,
-            "doing_well": 1,
-            "analyzing": 0,
-        }
-        chosen = max(
-            patch.dimensions,
-            key=lambda item: (priority_order.get(item.status, 0), -CoachPanelService._dimension_sort_index(item)),
-        )
-        if chosen.status == "analyzing":
-            return None
-
-        return LiveInsight(
-            id=insight_id,
-            title=chosen.headline,
-            detail=chosen.detail,
-            tone=CoachPanelService._map_display_status_to_tone(chosen.status),
-            source="omni-coach",
-        )
-
     def _build_summary(
         self,
         language: LanguageOption,
@@ -254,95 +225,6 @@ class CoachPanelService:
             sourceDimension=None,
             updatedAtMs=reference_time_ms,
         )
-
-    @staticmethod
-    def _map_tone_to_display_status(tone: InsightTone) -> str:
-        if tone == "warning":
-            return "adjust_now"
-        if tone == "positive":
-            return "doing_well"
-        return "stable"
-
-    @staticmethod
-    def _map_display_status_to_tone(status: str) -> InsightTone:
-        if status == "adjust_now":
-            return "warning"
-        if status == "doing_well":
-            return "positive"
-        return "neutral"
-
-    def _classify_omni_dimension(self, insight: LiveInsight, language: LanguageOption) -> str:
-        normalized = self._normalize(insight.title + " " + insight.detail)
-        body_keywords = (
-            "镜头",
-            "肩",
-            "头肩",
-            "上身",
-            "身体",
-            "手势",
-            "表情",
-            "眼神",
-            "画面",
-            "居中",
-            "camera",
-            "frame",
-            "posture",
-            "shoulder",
-            "gesture",
-            "body",
-            "eye",
-        )
-        voice_keywords = (
-            "语速",
-            "节奏",
-            "语气",
-            "吐字",
-            "声音",
-            "重音",
-            "停顿",
-            "起伏",
-            "卡",
-            "tone",
-            "pace",
-            "voice",
-            "pause",
-            "emphasis",
-            "clear",
-            "vocal",
-        )
-        content_keywords = (
-            "内容",
-            "主线",
-            "结构",
-            "逻辑",
-            "观点",
-            "表达",
-            "重复",
-            "口头禅",
-            "推进",
-            "message",
-            "structure",
-            "content",
-            "point",
-            "logic",
-        )
-
-        if any(keyword in normalized for keyword in body_keywords):
-            return "body_expression"
-        if any(keyword in normalized for keyword in voice_keywords):
-            return "voice_pacing"
-        if any(keyword in normalized for keyword in content_keywords):
-            return "content_expression"
-        return "voice_pacing" if language == "en" else "content_expression"
-
-    @staticmethod
-    def _dimension_sort_index(dimension: CoachPanelPatchDimension) -> int:
-        order = {
-            "body_expression": 0,
-            "voice_pacing": 1,
-            "content_expression": 2,
-        }
-        return order.get(dimension.id, 99)
 
     @staticmethod
     def _set_dimension(panel: CoachPanelState, dimension: CoachDimensionState) -> CoachPanelState:

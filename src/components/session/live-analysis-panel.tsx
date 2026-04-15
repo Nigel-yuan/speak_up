@@ -6,20 +6,7 @@ import type {
   CoachDisplayStatus,
   CoachPanelState,
   LanguageOption,
-  LiveInsight,
-  OmniDebugState,
 } from "@/types/session";
-
-function formatInsightSource(source: LiveInsight["source"] | undefined) {
-  switch (source) {
-    case "omni-coach":
-      return "Omni";
-    case "manual":
-      return "Manual";
-    default:
-      return "System";
-  }
-}
 
 function buildFallbackCoachPanel(language: LanguageOption): CoachPanelState {
   const isEnglish = language === "en";
@@ -271,16 +258,10 @@ function DimensionCard({
 
 export function LiveAnalysisPanel({
   coachPanel,
-  insights,
   language,
-  omniDebug,
-  coachDebugEnabled,
 }: {
   coachPanel: CoachPanelState | null;
-  insights: LiveInsight[];
   language: LanguageOption;
-  omniDebug?: OmniDebugState | null;
-  coachDebugEnabled?: boolean;
 }) {
   const activePanel = coachPanel ?? buildFallbackCoachPanel(language);
   const summaryTitle = truncateForDisplay(activePanel.summary.title, language, 22, 42);
@@ -290,7 +271,6 @@ export function LiveAnalysisPanel({
     activePanel.voicePacing,
     activePanel.contentExpression,
   ];
-  const showDebug = !!coachDebugEnabled;
 
   return (
     <Card className="flex h-full min-h-0 flex-col overflow-hidden rounded-[28px] border-white/60 bg-white/85 p-5 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
@@ -340,8 +320,8 @@ export function LiveAnalysisPanel({
         </p>
       </div>
 
-      <div className={`mt-3 min-h-0 ${showDebug ? "flex-none" : "flex-1 overflow-hidden"}`}>
-        <div className={`grid min-h-0 gap-2.5 ${showDebug ? "" : "h-full grid-rows-[repeat(3,minmax(0,1fr))]"}`}>
+      <div className="mt-3 min-h-0 flex-1 overflow-hidden">
+        <div className="grid h-full min-h-0 grid-rows-[repeat(3,minmax(0,1fr))] gap-2.5">
         {dimensions.map((dimension) => (
           <DimensionCard
             key={dimension.id}
@@ -352,68 +332,6 @@ export function LiveAnalysisPanel({
         ))}
         </div>
       </div>
-
-      {showDebug ? (
-        <div className="mt-3 min-h-0 flex-1 overflow-y-auto space-y-3 pr-1">
-          <div className="rounded-2xl border border-violet-100 bg-violet-50/80 px-4 py-4 text-slate-700">
-            <div className="mb-3 flex items-center justify-between">
-              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-violet-700">Omni Debug · Server</p>
-              <Badge tone={omniDebug?.lastError ? "warning" : omniDebug?.connected ? "positive" : "neutral"}>
-                {omniDebug?.connected ? "connected" : omniDebug?.configured ? "idle" : "disabled"}
-              </Badge>
-            </div>
-            <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs leading-5">
-              <span>configured</span>
-              <span className="text-right">{omniDebug?.configured ? "yes" : "no"}</span>
-              <span>session updated</span>
-              <span className="text-right">{omniDebug?.sessionUpdated ? "yes" : "no"}</span>
-              <span>responses</span>
-              <span className="text-right">{omniDebug?.responseCount ?? 0}</span>
-              <span>insights</span>
-              <span className="text-right">{omniDebug?.insightCount ?? 0}</span>
-              <span>last stage</span>
-              <span className="text-right">{omniDebug?.lastStage ?? "--"}</span>
-              <span>last event</span>
-              <span className="text-right">{omniDebug?.lastEventType ?? "--"}</span>
-              <span>last insight</span>
-              <span className="text-right">{omniDebug?.lastInsightTitle ?? "--"}</span>
-            </div>
-            <div className="mt-3 rounded-xl bg-white/75 px-3 py-2 text-[11px] leading-5 text-slate-600">
-              <p className="font-semibold text-slate-700">last text preview</p>
-              <p className="mt-1 break-words">{omniDebug?.lastTextPreview ?? "--"}</p>
-            </div>
-            <div className="mt-3 rounded-xl bg-white/75 px-3 py-2 text-[11px] leading-5 text-slate-600">
-              <p className="font-semibold text-slate-700">last error</p>
-              <p className="mt-1 break-words">{omniDebug?.lastError ?? "--"}</p>
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-slate-50/90 px-4 py-4 text-slate-700">
-            <div className="mb-3 flex items-center justify-between">
-              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-600">Insight Trace</p>
-              <Badge tone="neutral">{insights.length}</Badge>
-            </div>
-            <div className="space-y-3">
-              {insights.length === 0 ? (
-                <p className="text-xs text-slate-500">--</p>
-              ) : (
-                insights.map((insight) => (
-                  <div key={insight.id} className="rounded-xl border border-slate-200 bg-white px-3 py-3">
-                    <div className="mb-2 flex items-center justify-between">
-                      <p className="text-sm font-semibold text-slate-700">{insight.title}</p>
-                      <div className="flex items-center gap-2">
-                        <Badge tone="neutral">{formatInsightSource(insight.source)}</Badge>
-                        <Badge tone={insight.tone}>{insight.tone}</Badge>
-                      </div>
-                    </div>
-                    <p className="text-xs leading-5 text-slate-500">{insight.detail}</p>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
-      ) : null}
     </Card>
   );
 }

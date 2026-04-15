@@ -1,5 +1,7 @@
 export type ScenarioType = "host" | "guest-sharing" | "standup";
 export type LanguageOption = "zh" | "en";
+export type TrainingMode = "free_speech" | "document_speech";
+export type TrainingDocumentKind = "pdf" | "md";
 
 export interface ScenarioOption {
   id: ScenarioType;
@@ -18,14 +20,6 @@ export interface TranscriptChunk {
   timestampLabel: string;
   startMs: number;
   endMs: number;
-}
-
-export interface LiveInsight {
-  id: string;
-  title: string;
-  detail: string;
-  tone: "positive" | "neutral" | "warning";
-  source: "system" | "omni-coach" | "manual";
 }
 
 export type CoachDimensionId = "body_expression" | "voice_pacing" | "content_expression";
@@ -55,23 +49,16 @@ export interface CoachPanelState {
   contentExpression: CoachDimensionState;
 }
 
-export interface OmniDebugState {
-  configured: boolean;
-  connected: boolean;
-  sessionUpdated: boolean;
-  responseCount: number;
-  insightCount: number;
-  lastStage: string | null;
-  lastEventType: string | null;
-  lastTextPreview: string | null;
-  lastInsightTitle: string | null;
-  lastError: string | null;
-}
-
 export interface SessionSetup {
   scenarioId: ScenarioType;
   language: LanguageOption;
-  debugEnabled: boolean;
+}
+
+export interface TrainingDocumentAsset {
+  kind: TrainingDocumentKind;
+  name: string;
+  objectUrl: string | null;
+  markdownSource: string | null;
 }
 
 export interface SessionReplay {

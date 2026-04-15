@@ -2,7 +2,6 @@ import type { HistoricalSessionSummary, SessionReport } from "@/types/report";
 import type {
   CoachPanelState,
   LanguageOption,
-  OmniDebugState,
   ScenarioOption,
   ScenarioType,
   SessionReplay,
@@ -56,10 +55,8 @@ export interface RealtimeSession {
   sessionId: string;
   scenarioId: ScenarioType;
   language: LanguageOption;
-  debugEnabled: boolean;
   status: "created" | "streaming" | "finished";
   transcriptCount: number;
-  insightCount: number;
   audioChunkCount: number;
   videoFrameCount: number;
 }
@@ -76,17 +73,7 @@ export interface RealtimeEvent {
   message: string | null;
   chunk: TranscriptChunk | null;
   replacePrevious?: boolean;
-  insight:
-    | {
-        id: string;
-        title: string;
-        detail: string;
-        tone: "positive" | "neutral" | "warning";
-        source: "system" | "omni-coach" | "manual";
-      }
-    | null;
   coachPanel?: CoachPanelState | null;
-  omniDebug?: OmniDebugState | null;
 }
 
 export function getSessionStream(scenario: ScenarioType, language: LanguageOption) {
@@ -104,11 +91,10 @@ export function getSessionReplay(sessionId: string) {
 export function startRealtimeSession(
   scenarioId: ScenarioType,
   language: LanguageOption,
-  debugEnabled: boolean,
 ) {
   return request<RealtimeSessionResponse>("/api/session/start", {
     method: "POST",
-    body: JSON.stringify({ scenarioId, language, debugEnabled }),
+    body: JSON.stringify({ scenarioId, language }),
   });
 }
 
@@ -118,42 +104,12 @@ export function finishRealtimeSession(sessionId: string) {
   });
 }
 
-export async function uploadSessionFullAudio(
-  sessionId: string,
-  audioBlob: Blob,
-  reason: "pause" | "finish",
-) {
-  const formData = new FormData();
-  formData.append("audio_file", audioBlob, "session_full.webm");
-  formData.append("reason", reason);
-  if (audioBlob.type) {
-    formData.append("mime_type", audioBlob.type);
-  }
-
-  await request<{ path: string; sizeBytes: number }>(`/api/session/${sessionId}/debug/full-audio`, {
-    method: "POST",
-    body: formData,
-  });
-}
-
 export interface OutboundRealtimeMessage {
-  type:
-    | "ping"
-    | "start_stream"
-    | "audio_chunk"
-    | "video_frame"
-    | "inject_partial"
-    | "inject_transcript"
-    | "inject_insight";
+  type: "ping" | "start_stream" | "audio_chunk" | "video_frame";
   timestamp_ms?: number;
   payload?: string;
   image_base64?: string;
   mime_type?: string;
   sample_rate_hz?: number;
   channels?: number;
-  text?: string;
-  title?: string;
-  detail?: string;
-  tone?: "positive" | "neutral" | "warning";
-  timestamp_label?: string;
 }

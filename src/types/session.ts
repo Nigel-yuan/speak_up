@@ -2,6 +2,16 @@ export type ScenarioType = "host" | "guest-sharing" | "standup";
 export type LanguageOption = "zh" | "en";
 export type TrainingMode = "free_speech" | "document_speech";
 export type TrainingDocumentKind = "pdf" | "md";
+export type VoiceGender = "male" | "female";
+export type VoiceStyle = "professional" | "gentle" | "firm" | "encouraging";
+export type QAPhase =
+  | "idle"
+  | "preparing_context"
+  | "ai_asking"
+  | "user_answering"
+  | "evaluating_answer"
+  | "ready_next_turn"
+  | "completed";
 
 export interface ScenarioOption {
   id: ScenarioType;
@@ -52,6 +62,70 @@ export interface CoachPanelState {
 export interface SessionSetup {
   scenarioId: ScenarioType;
   language: LanguageOption;
+  trainingMode?: TrainingMode;
+  documentName?: string | null;
+  documentText?: string | null;
+  manualText?: string | null;
+}
+
+export interface VoiceProfile {
+  id: string;
+  label: string;
+  gender: VoiceGender;
+  style: VoiceStyle;
+}
+
+export interface TrainingDocumentPreview {
+  kind: "none" | "pdf";
+  status: "ready" | "unavailable";
+  message: string | null;
+}
+
+export interface QAState {
+  enabled: boolean;
+  phase: QAPhase;
+  currentTurnId: string | null;
+  currentQuestion: string | null;
+  currentQuestionGoal: string | null;
+  latestFeedback: string | null;
+  speaking: boolean;
+  voiceProfileId: string | null;
+}
+
+export interface QAQuestion {
+  turnId: string;
+  questionText: string;
+  goal: string;
+  followUp: boolean;
+  expectedPoints: string[];
+}
+
+export interface QAFeedback {
+  turnId: string;
+  feedbackText: string;
+  strengths: string[];
+  missedPoints: string[];
+  nextAction: "follow_up" | "next_question" | "end_qa";
+}
+
+export interface QAAudioStreamStart {
+  turnId: string;
+  sampleRateHz: number;
+  channels: number;
+  voiceProfileId: string;
+}
+
+export interface QAAudioStreamDelta {
+  turnId: string;
+  audioBase64: string;
+  sampleRateHz: number;
+}
+
+export interface QAAudioStreamEnd {
+  turnId: string;
+  durationMs: number;
+  audioUrl: string;
+  voiceProfileId: string;
 }
 
 export interface TrainingDocumentAsset {
@@ -59,6 +133,9 @@ export interface TrainingDocumentAsset {
   name: string;
   objectUrl: string | null;
   markdownSource: string | null;
+  extractedText: string | null;
+  extractedCharCount: number;
+  preview: TrainingDocumentPreview;
 }
 
 export interface SessionReplay {

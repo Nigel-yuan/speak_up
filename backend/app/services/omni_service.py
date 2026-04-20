@@ -36,6 +36,21 @@ SCENARIO_LABELS: dict[ScenarioType, str] = {
 }
 
 OmniAnalysisScope = Literal["voice_content", "body_visual"]
+OMNI_ACCOUNT_ACCESS_DENIED_MARKER = "access denied, please make sure your account is in good standing"
+OMNI_INTERNAL_SERVICE_ERROR_MARKER = "internal service error"
+OMNI_BODY_BUFFER_TOO_SMALL_MARKER = "buffer too small, or have no audio"
+
+
+def is_omni_account_access_denied(message: str) -> bool:
+    return OMNI_ACCOUNT_ACCESS_DENIED_MARKER in message.lower()
+
+
+def is_omni_internal_service_error(message: str) -> bool:
+    return OMNI_INTERNAL_SERVICE_ERROR_MARKER in message.lower()
+
+
+def is_omni_body_buffer_too_small_error(message: str) -> bool:
+    return OMNI_BODY_BUFFER_TOO_SMALL_MARKER in message.lower()
 
 
 @dataclass
@@ -52,14 +67,13 @@ class AliyunOmniCoachConnection:
     finished: asyncio.Event = field(default_factory=asyncio.Event)
     reader_task: asyncio.Task[None] | None = field(default=None, repr=False)
     has_received_audio: bool = False
-    pending_image_base64: str | None = None
     completed_response_ids: set[str] = field(default_factory=set)
     last_patch_signature: str | None = None
     last_emitted_at: float = 0.0
-    has_received_image: bool = False
     visual_request_in_flight: bool = False
     pending_visual_refresh: bool = False
-    last_visual_request_at: float = 0.0
+    buffered_audio_payloads: list[tuple[float, str]] = field(default_factory=list)
+    latest_image_base64: str | None = None
 
 
 class AliyunOmniCoachService:
@@ -89,9 +103,13 @@ class AliyunOmniCoachService:
             250,
             min(4000, int(os.getenv("ALIYUN_OMNI_COACH_SILENCE_DURATION_MS", "2000"))),
         )
-        self.visual_trigger_interval_ms = max(
-            800,
-            min(10000, int(os.getenv("ALIYUN_OMNI_BODY_TRIGGER_INTERVAL_MS", "1500"))),
+        self.body_audio_window_ms = max(
+            200,
+            min(2000, int(os.getenv("ALIYUN_OMNI_BODY_AUDIO_WINDOW_MS", "500"))),
+        )
+        self.body_audio_min_payloads = max(
+            2,
+            int(os.getenv("ALIYUN_OMNI_BODY_MIN_AUDIO_PAYLOADS", "3")),
         )
         self.connections: dict[str, AliyunOmniCoachConnection] = {}
 
@@ -177,6 +195,10 @@ class AliyunOmniCoachService:
         connection = self.connections.get(session_id)
         if connection is None or connection.finish_sent or not payload:
             return
+        if self.analysis_scope == "body_visual":
+            connection.has_received_audio = True
+            self._buffer_body_audio_payload(connection, payload.split(",", 1)[-1])
+            return
 
         await self._send_json(
             connection,
@@ -187,48 +209,25 @@ class AliyunOmniCoachService:
         )
         connection.has_received_audio = True
 
-        if connection.pending_image_base64:
-            await self._append_image(connection, connection.pending_image_base64)
-            connection.pending_image_base64 = None
-            connection.has_received_image = True
-            if self.turn_mode == "manual":
-                await self._maybe_request_visual_refresh(connection)
-
     async def send_video_frame(self, session_id: str, image_base64: str | None) -> None:
         connection = self.connections.get(session_id)
         if connection is None or connection.finish_sent or not image_base64:
             return
-
-        if not connection.has_received_audio:
-            connection.pending_image_base64 = image_base64.split(",", 1)[-1]
+        if self.analysis_scope != "body_visual":
             return
-
-        await self._append_image(connection, image_base64.split(",", 1)[-1])
-        connection.has_received_image = True
+        connection.latest_image_base64 = image_base64.split(",", 1)[-1]
         if self.turn_mode == "manual":
             await self._maybe_request_visual_refresh(connection)
 
     async def finish_session(self, session_id: str) -> None:
-        connection = self.connections.get(session_id)
-        if connection is None:
-            return
-
-        if not connection.finish_sent:
-            connection.finish_sent = True
-            await self._send_json(connection, {"type": "session.finish"})
-
-        try:
-            await asyncio.wait_for(connection.finished.wait(), timeout=10)
-        except TimeoutError:
-            pass
-        finally:
-            await self.close_session(session_id)
+        await self.close_session(session_id)
 
     async def close_session(self, session_id: str) -> None:
         connection = self.connections.pop(session_id, None)
         if connection is None:
             return
 
+        connection.finish_sent = True
         connection.finished.set()
 
         if connection.reader_task is not None and connection.reader_task is not asyncio.current_task():
@@ -324,13 +323,18 @@ class AliyunOmniCoachService:
                     connection.finished.set()
                     await self._emit_provider_event(connection.on_event, "session_finished", event)
                     continue
-        except ConnectionClosed:
+        except ConnectionClosed as error:
             connection.finished.set()
+            if not connection.finish_sent:
+                await connection.on_error(self._format_connection_closed_error(error))
         except asyncio.CancelledError:
             raise
         except Exception as error:
             await connection.on_error(f"Omni coach 连接异常：{error}")
             connection.finished.set()
+        finally:
+            if self.connections.get(connection.session_id) is connection:
+                self.connections.pop(connection.session_id, None)
 
     async def _emit_text_as_insight(self, connection: AliyunOmniCoachConnection, text: str) -> None:
         update = self._parse_live_update(connection, text)
@@ -474,9 +478,9 @@ class AliyunOmniCoachService:
             "You are the AI Live Coach for Speak Up. "
             f"The rehearsal scenario is: {scenario_label}. "
             f"Output language must be {language_label}. "
-            "You will receive streaming user audio and image frames from the same speaking session. "
+            "You will receive streaming user audio from the same speaking session. "
             "Your job is not to answer the content as an assistant. Your job is to coach the speaker's live delivery. "
-            "Use the most recent speaking turn and the latest nearby image frames to update only two fixed dimensions: "
+            "Use the most recent speaking turn to update only two fixed dimensions: "
             "voice_pacing and content_expression. "
             "Do not return body_expression. Body delivery is handled by a separate visual pass. "
             "Always evaluate and return both dimensions whenever should_emit=true, even if one dimension is only stable or analyzing right now. "
@@ -594,19 +598,42 @@ class AliyunOmniCoachService:
     async def _maybe_request_visual_refresh(self, connection: AliyunOmniCoachConnection) -> None:
         if self.turn_mode != "manual":
             return
-        if not connection.has_received_audio or not connection.has_received_image or connection.finish_sent:
+        if connection.finish_sent:
+            return
+        if self.analysis_scope == "body_visual":
+            if not connection.latest_image_base64:
+                return
+            if connection.visual_request_in_flight:
+                connection.pending_visual_refresh = True
+                return
+            audio_payloads = self._collect_recent_body_audio_payloads(connection)
+            if len(audio_payloads) < self.body_audio_min_payloads:
+                return
+
+            image_base64 = connection.latest_image_base64
+            connection.latest_image_base64 = None
+            connection.visual_request_in_flight = True
+            connection.pending_visual_refresh = False
+            for audio_payload in audio_payloads:
+                await self._send_json(
+                    connection,
+                    {
+                        "type": "input_audio_buffer.append",
+                        "audio": audio_payload,
+                    },
+                )
+            await self._append_image(connection, image_base64)
+            await self._send_json(connection, {"type": "input_audio_buffer.commit"})
+            await self._send_json(connection, {"type": "response.create"})
+            return
+        if not connection.has_received_audio:
             return
         if connection.visual_request_in_flight:
             connection.pending_visual_refresh = True
             return
 
-        now = monotonic()
-        if now - connection.last_visual_request_at < self.visual_trigger_interval_ms / 1000:
-            return
-
         connection.visual_request_in_flight = True
         connection.pending_visual_refresh = False
-        connection.last_visual_request_at = now
         await self._send_json(connection, {"type": "input_audio_buffer.commit"})
         await self._send_json(connection, {"type": "response.create"})
 
@@ -614,6 +641,25 @@ class AliyunOmniCoachService:
         if not connection.pending_visual_refresh or connection.finish_sent:
             return
         await self._maybe_request_visual_refresh(connection)
+
+    def _buffer_body_audio_payload(self, connection: AliyunOmniCoachConnection, payload: str) -> None:
+        now = monotonic()
+        cutoff = now - self.body_audio_window_ms / 1000
+        connection.buffered_audio_payloads = [
+            (timestamp, buffered_payload)
+            for timestamp, buffered_payload in connection.buffered_audio_payloads
+            if timestamp >= cutoff
+        ]
+        connection.buffered_audio_payloads.append((now, payload))
+
+    def _collect_recent_body_audio_payloads(self, connection: AliyunOmniCoachConnection) -> list[str]:
+        cutoff = monotonic() - self.body_audio_window_ms / 1000
+        connection.buffered_audio_payloads = [
+            (timestamp, payload)
+            for timestamp, payload in connection.buffered_audio_payloads
+            if timestamp >= cutoff
+        ]
+        return [payload for _, payload in connection.buffered_audio_payloads]
 
     def _build_url(self) -> str:
         encoded_model = quote(self.model, safe="")
@@ -646,6 +692,13 @@ class AliyunOmniCoachService:
         if isinstance(message, str) and message.strip():
             return message
         return "Omni coach 服务返回错误"
+
+    @staticmethod
+    def _format_connection_closed_error(error: ConnectionClosed) -> str:
+        reason = (error.reason or "").strip()
+        if reason:
+            return reason
+        return str(error)
 
     @staticmethod
     async def _emit_provider_event(

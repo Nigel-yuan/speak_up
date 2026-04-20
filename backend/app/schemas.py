@@ -5,6 +5,10 @@ from pydantic import BaseModel
 
 ScenarioType = Literal["host", "guest-sharing", "standup"]
 LanguageOption = Literal["zh", "en"]
+TrainingMode = Literal["free_speech", "document_speech"]
+DocumentKind = Literal["pdf", "md"]
+DocumentPreviewKind = Literal["none", "pdf"]
+DocumentPreviewStatus = Literal["ready", "unavailable"]
 InsightTone = Literal["positive", "neutral", "warning"]
 InsightSource = Literal["system", "omni-coach", "manual"]
 CoachDimensionId = Literal["body_expression", "voice_pacing", "content_expression"]
@@ -12,11 +16,30 @@ CoachDisplayStatus = Literal["doing_well", "stable", "adjust_now", "analyzing"]
 CoachDimensionSource = Literal["system", "omni-coach", "speech-rule"]
 TranscriptSpeaker = Literal["user", "coach"]
 SessionStatus = Literal["created", "streaming", "finished"]
+VoiceGender = Literal["male", "female"]
+VoiceStyle = Literal["professional", "gentle", "firm", "encouraging"]
+QAPhase = Literal[
+    "idle",
+    "preparing_context",
+    "ai_asking",
+    "user_answering",
+    "evaluating_answer",
+    "ready_next_turn",
+    "completed",
+]
 RealtimeEventType = Literal[
     "session_status",
     "transcript_partial",
     "transcript_final",
     "coach_panel",
+    "qa_state",
+    "qa_question",
+    "qa_audio",
+    "qa_audio_stream_start",
+    "qa_audio_stream_delta",
+    "qa_audio_stream_end",
+    "qa_feedback",
+    "qa_voice_profiles",
     "pong",
     "ack",
     "error",
@@ -26,6 +49,14 @@ ClientMessageType = Literal[
     "start_stream",
     "audio_chunk",
     "video_frame",
+    "start_qa",
+    "stop_qa",
+    "qa_prewarm_context",
+    "qa_request_question",
+    "qa_stop_answer",
+    "qa_select_voice_profile",
+    "qa_audio_playback_started",
+    "qa_audio_playback_ended",
 ]
 
 
@@ -93,6 +124,54 @@ class CoachPanelPatch(BaseModel):
 class SessionSetup(BaseModel):
     scenarioId: ScenarioType
     language: LanguageOption
+
+
+class VoiceProfile(BaseModel):
+    id: str
+    label: str
+    gender: VoiceGender
+    style: VoiceStyle
+
+
+class DocumentPreview(BaseModel):
+    kind: DocumentPreviewKind = "none"
+    status: DocumentPreviewStatus = "unavailable"
+    message: str | None = None
+
+
+class DocumentExtractionResponse(BaseModel):
+    kind: DocumentKind
+    filename: str
+    text: str
+    charCount: int
+    preview: DocumentPreview = DocumentPreview()
+
+
+class QAState(BaseModel):
+    enabled: bool = False
+    phase: QAPhase = "idle"
+    currentTurnId: str | None = None
+    currentQuestion: str | None = None
+    currentQuestionGoal: str | None = None
+    latestFeedback: str | None = None
+    speaking: bool = False
+    voiceProfileId: str | None = None
+
+
+class QAQuestion(BaseModel):
+    turnId: str
+    questionText: str
+    goal: str
+    followUp: bool = False
+    expectedPoints: list[str] = []
+
+
+class QAFeedback(BaseModel):
+    turnId: str
+    feedbackText: str
+    strengths: list[str] = []
+    missedPoints: list[str] = []
+    nextAction: Literal["follow_up", "next_question", "end_qa"] = "next_question"
 
 
 class RadarMetric(BaseModel):
@@ -186,6 +265,57 @@ class CoachPanelEvent(BaseModel):
     coachPanel: CoachPanelState
 
 
+class QAStateEvent(BaseModel):
+    type: Literal["qa_state"] = "qa_state"
+    qaState: QAState
+
+
+class QAQuestionEvent(BaseModel):
+    type: Literal["qa_question"] = "qa_question"
+    question: QAQuestion
+
+
+class QAAudioEvent(BaseModel):
+    type: Literal["qa_audio"] = "qa_audio"
+    turnId: str
+    audioUrl: str
+    durationMs: int
+    voiceProfileId: str
+
+
+class QAAudioStreamStartEvent(BaseModel):
+    type: Literal["qa_audio_stream_start"] = "qa_audio_stream_start"
+    turnId: str
+    sampleRateHz: int
+    channels: int = 1
+    voiceProfileId: str
+
+
+class QAAudioStreamDeltaEvent(BaseModel):
+    type: Literal["qa_audio_stream_delta"] = "qa_audio_stream_delta"
+    turnId: str
+    audioBase64: str
+    sampleRateHz: int
+
+
+class QAAudioStreamEndEvent(BaseModel):
+    type: Literal["qa_audio_stream_end"] = "qa_audio_stream_end"
+    turnId: str
+    durationMs: int
+    audioUrl: str
+    voiceProfileId: str
+
+
+class QAFeedbackEvent(BaseModel):
+    type: Literal["qa_feedback"] = "qa_feedback"
+    feedback: QAFeedback
+
+
+class QAVoiceProfilesEvent(BaseModel):
+    type: Literal["qa_voice_profiles"] = "qa_voice_profiles"
+    voiceProfiles: list[VoiceProfile]
+
+
 class PongEvent(BaseModel):
     type: Literal["pong"] = "pong"
 
@@ -204,7 +334,13 @@ class ClientMessage(BaseModel):
     type: ClientMessageType
     timestamp_ms: int | None = None
     payload: str | None = None
+    turn_id: str | None = None
     image_base64: str | None = None
     mime_type: str | None = None
     sample_rate_hz: int | None = None
     channels: int | None = None
+    training_mode: TrainingMode | None = None
+    voice_profile_id: str | None = None
+    document_name: str | None = None
+    document_text: str | None = None
+    manual_text: str | None = None

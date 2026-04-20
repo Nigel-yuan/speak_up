@@ -1,4 +1,7 @@
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+import logging
+
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.data.history import HISTORICAL_SESSIONS, get_report_by_scenario
@@ -6,10 +9,12 @@ from app.data.scenarios import SCENARIOS
 from app.data.session_stream import get_session_frames
 from app.schemas import (
     ClientMessage,
+    DocumentExtractionResponse,
     HistoricalSessionSummary,
     LanguageOption,
     RealtimeSession,
     RealtimeSessionResponse,
+    VoiceProfile,
     ScenarioOption,
     ScenarioType,
     SessionReport,
@@ -17,7 +22,25 @@ from app.schemas import (
     SessionStreamFrame,
     StartSessionRequest,
 )
+from app.services.document_extraction_service import DocumentExtractionError, document_extraction_service
+from app.services.document_preview_service import document_preview_service
 from app.services.session_manager import session_manager
+
+
+def _configure_app_logging() -> None:
+    uvicorn_logger = logging.getLogger("uvicorn.error")
+    formatter = logging.Formatter("%(levelname)s:     %(name)s - %(message)s")
+    fallback_handler = logging.StreamHandler()
+    fallback_handler.setFormatter(formatter)
+
+    for logger_name in ("speak_up.session", "speak_up.qa"):
+        app_logger = logging.getLogger(logger_name)
+        app_logger.setLevel(logging.INFO)
+        app_logger.handlers = uvicorn_logger.handlers or [fallback_handler]
+        app_logger.propagate = False
+
+
+_configure_app_logging()
 
 
 app = FastAPI(title="Speak Up API", version="0.3.0")
@@ -25,6 +48,7 @@ app = FastAPI(title="Speak Up API", version="0.3.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origin_regex=r"https?://.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -39,6 +63,68 @@ def health() -> dict[str, str]:
 @app.get("/api/scenarios", response_model=list[ScenarioOption])
 def list_scenarios() -> list[ScenarioOption]:
     return SCENARIOS
+
+
+@app.get("/api/qa/voice-profiles", response_model=list[VoiceProfile])
+def list_qa_voice_profiles() -> list[VoiceProfile]:
+    return session_manager.qa_mode_orchestrator.list_voice_profiles()
+
+
+@app.post("/api/document/extract", response_model=DocumentExtractionResponse)
+async def extract_document_text(file: UploadFile = File(...)) -> DocumentExtractionResponse:
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Document file is empty")
+
+    try:
+        extraction = document_extraction_service.extract(
+            filename=file.filename or "document",
+            content_type=file.content_type,
+            data=data,
+        )
+    except DocumentExtractionError as error:
+        logging.getLogger("speak_up.session").warning(
+            "document.extract.failed filename=%s content_type=%s bytes=%s error=%s",
+            file.filename or "document",
+            file.content_type,
+            len(data),
+            error,
+        )
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    if not extraction.text.strip():
+        logging.getLogger("speak_up.session").warning(
+            "document.extract.empty filename=%s kind=%s bytes=%s",
+            file.filename or "document",
+            extraction.kind,
+            len(data),
+        )
+        raise HTTPException(status_code=400, detail="未能从文档中抽取到可用正文。")
+
+    preview = await document_preview_service.build_preview(
+        kind=extraction.kind,
+        filename=file.filename or "document",
+        content_type=file.content_type,
+        data=data,
+    )
+
+    logging.getLogger("speak_up.session").info(
+        "document.extract.done filename=%s kind=%s bytes=%s chars=%s preview_kind=%s preview_status=%s",
+        file.filename or "document",
+        extraction.kind,
+        len(data),
+        len(extraction.text),
+        preview.kind,
+        preview.status,
+    )
+
+    return DocumentExtractionResponse(
+        kind=extraction.kind,
+        filename=file.filename or "document",
+        text=extraction.text,
+        charCount=len(extraction.text),
+        preview=preview,
+    )
 
 
 @app.get("/api/history", response_model=list[HistoricalSessionSummary])
@@ -96,6 +182,14 @@ def get_session_replay(session_id: str) -> SessionReplay:
     if replay is None:
         raise HTTPException(status_code=404, detail="Session not found")
     return SessionReplay.model_validate(replay)
+
+
+@app.get("/api/session/{session_id}/qa/turns/{turn_id}/audio")
+def get_qa_turn_audio(session_id: str, turn_id: str) -> FileResponse:
+    file_path = session_manager.qa_mode_orchestrator.get_audio_path(session_id, turn_id)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="QA audio not found")
+    return FileResponse(path=file_path, media_type="audio/wav", filename=file_path.name)
 
 
 @app.websocket("/ws/session/{session_id}")

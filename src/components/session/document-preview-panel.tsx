@@ -2,22 +2,8 @@
 
 import { useMemo } from "react";
 
-import { CameraPanel } from "@/components/session/camera-panel";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import type { TrainingDocumentAsset } from "@/types/session";
-
-interface DocumentStageProps {
-  children: React.ReactNode;
-  documentAsset: TrainingDocumentAsset | null;
-  elapsedSeconds: number;
-  isRunning: boolean;
-  onDocumentPick: () => void;
-  onFrameCaptureReady?: (capture: () => string | null) => void;
-  sessionId: string | null;
-  statusMessage: string | null;
-}
 
 interface MarkdownBlock {
   id: string;
@@ -261,31 +247,6 @@ function MarkdownPreview({ source }: { source: string }) {
   );
 }
 
-function EmptyDocumentState({ onDocumentPick }: { onDocumentPick: () => void }) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-5 px-8 text-center">
-      <div className="space-y-2">
-        <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">Document Rehearsal</p>
-        <h3 className="text-3xl font-semibold tracking-tight text-slate-950">上传 `PDF` 或 `Markdown` 文档</h3>
-        <p className="max-w-2xl text-sm leading-7 text-slate-500">
-          PDF 和 Markdown 直接预览。文档会占据主视区，摄像头缩到右上角。
-        </p>
-      </div>
-      <Button
-        type="button"
-        onClick={onDocumentPick}
-        className="bg-slate-950 px-6 text-white hover:bg-slate-800"
-      >
-        选择文档
-      </Button>
-      <div className="flex items-center gap-2 text-xs font-medium text-slate-400">
-        <span className="rounded-full bg-slate-200 px-3 py-1">PDF</span>
-        <span className="rounded-full bg-slate-200 px-3 py-1">MD</span>
-      </div>
-    </div>
-  );
-}
-
 function PdfPreview({ objectUrl }: { objectUrl: string }) {
   return (
     <object data={objectUrl} type="application/pdf" className="h-full w-full">
@@ -304,69 +265,26 @@ function PdfPreview({ objectUrl }: { objectUrl: string }) {
   );
 }
 
-export function DocumentStage({
-  children,
+export function DocumentPreviewPanel({
   documentAsset,
-  elapsedSeconds,
-  isRunning,
-  onDocumentPick,
-  onFrameCaptureReady,
-  sessionId,
-  statusMessage,
-}: DocumentStageProps) {
-  const statusBadgeTone = isRunning ? "positive" : "neutral";
-
+}: {
+  documentAsset: TrainingDocumentAsset | null;
+}) {
   return (
     <Card className="flex h-full min-h-0 flex-col overflow-hidden rounded-[28px] border-white/70 bg-[#efece3] shadow-[0_18px_45px_rgba(15,23,42,0.12)]">
       <div className="relative min-h-0 flex-1 overflow-hidden">
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.55),transparent_30%),linear-gradient(to_bottom,rgba(255,255,255,0.32),transparent_18%)]" />
-
-        <div className="absolute left-5 top-5 z-10 flex max-w-[46%] flex-wrap items-center gap-2">
-          <span className="rounded-full bg-slate-950 px-3.5 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-white shadow-[0_10px_24px_rgba(15,23,42,0.18)]">
-            Document Stage
-          </span>
-          <Badge tone={statusBadgeTone}>{isRunning ? "进行中" : "待开始"}</Badge>
-          <span className="rounded-full bg-white/90 px-3 py-1.5 text-xs font-semibold text-slate-600 shadow-[0_8px_18px_rgba(15,23,42,0.06)] backdrop-blur">
-            {documentAsset ? documentAsset.kind.toUpperCase() : "未上传"}
-          </span>
-          {sessionId ? (
-            <span className="rounded-full bg-white/90 px-3 py-1.5 text-xs font-medium text-slate-500 shadow-[0_8px_18px_rgba(15,23,42,0.06)] backdrop-blur">
-              Session ID: {sessionId}
-            </span>
-          ) : null}
-          {statusMessage ? (
-            <div className="mt-1 max-w-full rounded-2xl bg-slate-950 px-4 py-2 text-sm font-medium text-white shadow-[0_10px_25px_rgba(15,23,42,0.16)]">
-              {statusMessage}
-            </div>
-          ) : null}
-        </div>
-
-        <div className="absolute right-5 top-5 z-20 h-[144px] w-[219px]">
-          <CameraPanel
-            elapsedSeconds={elapsedSeconds}
-            isRunning={isRunning}
-            onFrameCaptureReady={onFrameCaptureReady}
-            variant="inset"
-          >
-            <div />
-          </CameraPanel>
-        </div>
-
         <div className="h-full overflow-y-auto px-6 pb-6 pt-6">
           {documentAsset ? (
             <div className="mx-auto min-h-full max-w-[980px] rounded-[30px] border border-white/90 bg-white/95 p-7 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
-              <div className="mb-6 flex items-start justify-between gap-4 border-b border-slate-200/90 pb-4 pr-[180px]">
-                <div className="min-w-0">
-                  <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Current Document</p>
-                  <h3 className="mt-1 truncate text-xl font-semibold text-slate-950">{documentAsset.name}</h3>
-                </div>
-                <Button
-                  type="button"
-                  onClick={onDocumentPick}
-                  className="shrink-0 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200"
-                >
-                  更换文档
-                </Button>
+              <div className="mb-6 border-b border-slate-200/90 pb-4">
+                <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Current Document</p>
+                <h3 className="mt-1 truncate text-xl font-semibold text-slate-950">{documentAsset.name}</h3>
+                <p className="mt-2 text-xs font-medium text-slate-500">
+                  {documentAsset.kind === "pdf"
+                    ? "PDF 保持原文预览，问答会使用 PDF 正文。"
+                    : "Markdown 保持正文预览，问答会使用文档内容。"}
+                </p>
               </div>
 
               <div className="min-h-0">
@@ -384,13 +302,11 @@ export function DocumentStage({
               </div>
             </div>
           ) : (
-            <div className="h-full rounded-[28px] border border-dashed border-slate-300 bg-white/72 shadow-[0_20px_50px_rgba(15,23,42,0.06)]">
-              <EmptyDocumentState onDocumentPick={onDocumentPick} />
+            <div className="flex h-full items-center justify-center rounded-[28px] border border-dashed border-slate-300 bg-white/72 p-8 text-center text-sm leading-7 text-slate-500 shadow-[0_20px_50px_rgba(15,23,42,0.06)]">
+              问答模式下如果没有文档材料，AI 会优先基于已讲内容来提问。
             </div>
           )}
         </div>
-
-        <div className="absolute bottom-5 right-5 z-20">{children}</div>
       </div>
     </Card>
   );

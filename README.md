@@ -1,88 +1,62 @@
 # Speak Up
 
-Speak Up 是一个 AI 演讲训练产品原型。当前这版已经跑通了三条主链路：
+Speak Up 是一个 AI 演讲训练原型，当前已经把三条实时链路接起来了：
 
-- 实时语音转写
+- 实时 ASR
 - 实时 AI Live Coach
-- 训练后报告与回放入口
+- AI 问答训练
 
-这不是完整生产系统，但已经不是纯 mock demo。当前形态是：
+报告、历史和回放仍然是原型态，但训练主流程已经可用。
 
-- 真实实时 ASR：阿里云 `qwen3-asr-flash-realtime`
-- 真实实时 Live Coach：阿里云 `Qwen3.5-Omni-Realtime`
-- 报告、历史、趋势：仍然是原型数据
-
-## 当前支持
+## 当前能力
 
 ### 训练模式
 
-- 自由演讲
-- 文档演讲 V1
+- `free_speech`
+- `document_speech`
 
-### 演讲场景
+### 问答模式
 
-- `host`
-- `guest-sharing`
-- `standup`
+- QA 是独立开关，不是第三种训练模式
+- 可同时工作在自由演讲和文档演讲下
+- 每轮最多 `3` 个主题
+- 每个主题最多 `3` 次追问
 
-### 语言
+### 文档输入
 
-- `zh`
-- `en`
+- 支持上传 `pdf`
+- 支持上传 `md`
+- `ppt/pptx` 已下线
+- 文档文本会进入 QA 预热和提问上下文
+- 文档当前仍不参与 Live Coach 的实时打分
 
-### 训练页
+## 实时链路
 
-- 麦克风采集
-- 摄像头预览
-- 实时文字稿
-- 固定三维 `AI Live Coach`
-- 历史记录侧栏
-- `开始 / 暂停 / 重置 / 结束并生成报告`
-
-### 文档演讲模式 V1
-
-当前第一版只做前端演讲辅助，不把文档接进实时评分。
-
-已支持：
-
-- 本地上传 `pdf`
-- 本地上传 `md`
-- 主视区显示文档
-- 右上角悬浮视频小窗
-
-当前还没做：
-
-- 文档内容参与实时 AI Live Coach
-- 文档内容参与实时评分
-- 文档内容参与报告生成
-
-## 当前真实链路
-
-### 实时语音转写
+### ASR
 
 - 前端通过 `AudioWorklet` 采集麦克风
-- 重采样到 `PCM 16k mono`
-- 约 `100ms` 一包通过 WebSocket 发给后端
+- 音频重采样到 `PCM 16k mono`
 - 后端转发给阿里云 `qwen3-asr-flash-realtime`
-- 前端消费 `transcript_partial` 和 `transcript_final`
+- 前端消费 `transcript_partial` / `transcript_final`
 
-### AI Live Coach
+### Live Coach
 
-- 前端约 `1s` 发送一张 JPEG 视频帧
-- 后端并行维护两条 Omni coach lane：
+- 视频帧约每秒 1 张
+- 后端维持两条 Omni lane：
   - `voice_content`
   - `body_visual`
-- 后端把 Omni patch 和 transcript 规则分析统一聚合成 `coach_panel`
-- 前端右侧固定展示：
-  - `肢体 & 表情`
-  - `语音语调 & 节奏`
-  - `内容 & 表达`
+- Omni patch 和本地 transcript 规则统一汇总成 `coach_panel`
 
-### 报告与回放
+### QA
 
-- 报告页目前还是静态原型数据
-- 回放页当前以 transcript timeline 为主
-- 真实媒体回放链路暂未接入
+- `qa_brain_service` 负责压缩上下文和预热 brief
+- `qwen3.5-omni-plus-realtime` 负责实时口播提问
+- 用户回答期间，ASR partial 会先进入临时答案
+- `speech_stopped` 后，如果答案不是空/语气词，`2s` 后自动进入下一轮
+- 如果一直没有有效回答，`10s` 静默兜底决定追问、下一题或结束
+- 前端会回传 interviewer 音频播放开始/结束，避免服务端在音频还没播完时提前推进
+
+更细的时序和日志说明见 [docs/qa-mode-design.md](docs/qa-mode-design.md)。
 
 ## 本地运行
 
@@ -106,33 +80,13 @@ npm run dev
 http://localhost:3000
 ```
 
-前端环境变量：
-
-```bash
-NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
-```
-
 ### 后端
-
-首次启动：
 
 ```bash
 python3 -m venv backend/.venv
 source backend/.venv/bin/activate
 pip install -r backend/requirements.txt
-```
-
-在仓库根目录启动：
-
-```bash
 backend/.venv/bin/uvicorn app.main:app --reload --app-dir backend --port 8000
-```
-
-或在 `backend/` 目录启动：
-
-```bash
-cd backend
-.venv/bin/uvicorn app.main:app --reload --port 8000
 ```
 
 健康检查：
@@ -150,18 +104,7 @@ DASHSCOPE_API_KEY=sk-xxx
 NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
 ```
 
-常用可选项：
-
-```bash
-ALIYUN_REALTIME_ASR_MODEL=qwen3-asr-flash-realtime
-ALIYUN_REALTIME_ASR_URL=wss://dashscope.aliyuncs.com/api-ws/v1/realtime
-
-ALIYUN_OMNI_COACH_ENABLED=true
-ALIYUN_OMNI_COACH_MODEL=qwen3.5-omni-flash-realtime
-ALIYUN_OMNI_COACH_URL=wss://dashscope.aliyuncs.com/api-ws/v1/realtime
-ALIYUN_OMNI_COACH_SILENCE_DURATION_MS=2000
-ALIYUN_OMNI_BODY_TRIGGER_INTERVAL_MS=1500
-```
+完整示例见 [.env.example](.env.example)。
 
 ## 关键接口
 
@@ -175,6 +118,9 @@ ALIYUN_OMNI_BODY_TRIGGER_INTERVAL_MS=1500
 - `GET /api/session/{session_id}`
 - `POST /api/session/{session_id}/finish`
 - `GET /api/session/{session_id}/replay`
+- `POST /api/document/extract`
+- `GET /api/qa/voice-profiles`
+- `GET /api/session/{session_id}/qa/turns/{turn_id}/audio`
 
 ### WebSocket
 
@@ -185,7 +131,12 @@ ALIYUN_OMNI_BODY_TRIGGER_INTERVAL_MS=1500
 - `start_stream`
 - `audio_chunk`
 - `video_frame`
-- `ping`
+- `start_qa`
+- `stop_qa`
+- `qa_prewarm_context`
+- `qa_select_voice_profile`
+- `qa_audio_playback_started`
+- `qa_audio_playback_ended`
 
 后端会返回：
 
@@ -193,63 +144,45 @@ ALIYUN_OMNI_BODY_TRIGGER_INTERVAL_MS=1500
 - `transcript_partial`
 - `transcript_final`
 - `coach_panel`
+- `qa_state`
+- `qa_question`
+- `qa_audio_stream_start`
+- `qa_audio_stream_delta`
+- `qa_audio_stream_end`
+- `qa_feedback`
+- `qa_voice_profiles`
 - `pong`
 - `error`
 
-## 页面结构
+## 目录
 
-### 训练页
+```text
+src/
+  components/session/
+  hooks/
+  lib/
+  types/
 
-- 左侧：主视区
-  - 自由演讲：视频主视区
-  - 文档演讲：文档主视区 + 右上角视频小窗
-- 右侧上半：`Live Transcript`
-- 右侧下半：`AI Live Coach`
+backend/app/
+  main.py
+  schemas.py
+  services/
+```
 
-### AI Live Coach
+QA 相关核心文件：
 
-- 顶部：当前重点
-- 下方：三张固定维度卡
-- 不再使用滚动提示流
+- `backend/app/services/session_manager.py`
+- `backend/app/services/qa_mode_orchestrator.py`
+- `backend/app/services/qa_brain_service.py`
+- `backend/app/services/qa_omni_realtime_service.py`
+- `src/components/session/session-workspace.tsx`
+- `src/components/session/session-stage.tsx`
+- `src/components/session/qa-avatar-panel.tsx`
+- `src/hooks/useMockSession.ts`
 
 ## 当前限制
 
 - 报告页还不是按真实 session 生成
 - 历史记录仍然是静态数据
-- 回放页还没有真实视频/音频回放
-- 文档模式当前只做前端预览，不参与实时评分
-- 问答模式还未接入
-
-## 目录说明
-
-```text
-src/
-  app/
-  components/
-  hooks/
-  lib/
-  types/
-
-backend/
-  app/
-    data/
-    services/
-    main.py
-  requirements.txt
-```
-
-当前核心后端服务：
-
-- `stt_service.py`：实时 ASR
-- `omni_service.py`：Omni coach
-- `speech_analysis_service.py`：基于 transcript 的规则分析
-- `coach_panel_service.py`：统一聚合三维 `coach_panel`
-- `session_manager.py`：session 编排与 fanout
-
-## 当前最值得继续做的事
-
-1. 报告页改成按真实 `sessionId` 生成
-2. 文档模式接入报告生成
-3. 问答模式
-4. 真实媒体回放
-5. 数据持久化
+- 回放页还没有真实音视频回放
+- 文档当前只参与 QA，不参与 Live Coach 实时评分

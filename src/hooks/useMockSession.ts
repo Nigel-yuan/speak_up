@@ -10,7 +10,11 @@ import {
 } from "@/lib/api";
 import type {
   CoachPanelState,
+  QAFeedback,
+  QAQuestion,
+  QAState,
   SessionSetup,
+  TrainingMode,
   TranscriptChunk,
 } from "@/types/session";
 
@@ -46,12 +50,23 @@ const PCM_SAMPLE_RATE = 16000;
 const PCM_WORKLET_MODULE_PATH = "/audio/pcm-capture.worklet.js";
 const VIDEO_FRAME_INTERVAL_MS = 1000;
 const PARTIAL_FILLER_TOKENS = {
-  en: new Set(["um", "uh", "well", "so"]),
-  zh: new Set(["嗯", "啊", "额", "呃", "然后", "就是", "哦", "诶", "欸", "哎", "唉"]),
+  en: new Set(["um", "uh", "well", "so", "hmm", "hm", "hmmm", "mhm", "mm"]),
+  zh: new Set(["嗯", "啊", "额", "呃", "然后", "就是", "哦", "诶", "欸", "哎", "唉", "hmm", "hm", "hmmm", "mhm", "mm"]),
 };
 const PARTIAL_NOISE_PATTERN = /^[\s,.!?，。！？、…]+$/;
 const SHORT_PARTIAL_WORDS_MAX = 3;
 const SHORT_PARTIAL_CHARS_MAX = 4;
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
+const idleQAState: QAState = {
+  enabled: false,
+  phase: "idle",
+  currentTurnId: null,
+  currentQuestion: null,
+  currentQuestionGoal: null,
+  latestFeedback: null,
+  speaking: false,
+  voiceProfileId: null,
+};
 
 function createEmptyTranscriptState(): TranscriptStateRef {
   return {
@@ -91,6 +106,27 @@ function encodeBase64(bytes: Uint8Array) {
   }
 
   return window.btoa(binary);
+}
+
+function decodeBase64ToBytes(payload: string) {
+  const binary = window.atob(payload);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function pcm16BytesToFloat32(bytes: Uint8Array) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const sampleCount = Math.floor(bytes.byteLength / 2);
+  const samples = new Float32Array(sampleCount);
+
+  for (let index = 0; index < sampleCount; index += 1) {
+    samples[index] = view.getInt16(index * 2, true) / 0x8000;
+  }
+
+  return samples;
 }
 
 function float32ToPcm16(samples: Float32Array) {
@@ -272,6 +308,18 @@ function isWeakStandalonePartial(partialText: string, language: SessionSetup["la
   return isFillerPartial(trimmedPartial, language);
 }
 
+function resolveApiUrl(url: string | null | undefined) {
+  if (!url) {
+    return null;
+  }
+
+  if (url.startsWith("http")) {
+    return url;
+  }
+
+  return `${API_BASE_URL}${url}`;
+}
+
 export function useMockSession(setup: SessionSetup) {
   const socketRef = useRef<WebSocket | null>(null);
   const mediaTimerRef = useRef<number | null>(null);
@@ -288,6 +336,24 @@ export function useMockSession(setup: SessionSetup) {
   const [transcript, setTranscript] = useState<TranscriptChunk[]>([]);
   const [activeTranscript, setActiveTranscript] = useState<TranscriptChunk | null>(null);
   const [coachPanel, setCoachPanel] = useState<CoachPanelState | null>(null);
+  const [qaState, setQAState] = useState<QAState>(idleQAState);
+  const [qaQuestion, setQAQuestion] = useState<QAQuestion | null>(null);
+  const [qaFeedback, setQAFeedback] = useState<QAFeedback | null>(null);
+  const [qaAudioUrl, setQAAudioUrl] = useState<string | null>(null);
+  const [qaAudioAutoPlay, setQAAudioAutoPlay] = useState(false);
+  const qaAudioContextRef = useRef<AudioContext | null>(null);
+  const qaAudioPlaybackTimeRef = useRef(0);
+  const qaAudioTurnRef = useRef<string | null>(null);
+  const qaAudioEndTimerRef = useRef<number | null>(null);
+  const qaAudioLiveChunkCountRef = useRef(0);
+  const qaAudioShouldFallbackToFileRef = useRef(false);
+  const qaPlaybackStateRef = useRef<{ turnId: string | null; playing: boolean }>({
+    turnId: null,
+    playing: false,
+  });
+  const interviewerSpeakingRef = useRef(false);
+  const [interviewerSpeaking, setInterviewerSpeakingState] = useState(false);
+  const qaStateRef = useRef<QAState>(idleQAState);
   const [sessionState, setSessionState] = useState<SessionState>(idleSessionState);
   const transcriptStateRef = useRef<TranscriptStateRef>(createEmptyTranscriptState());
 
@@ -303,7 +369,45 @@ export function useMockSession(setup: SessionSetup) {
     }
   }, []);
 
+  const ensureQAAudioContext = useCallback(() => {
+    let audioContext = qaAudioContextRef.current;
+    if (!audioContext || audioContext.state === "closed") {
+      audioContext = new AudioContext({ sampleRate: 24000 });
+      qaAudioContextRef.current = audioContext;
+    }
+
+    void audioContext.resume().catch(() => {
+      qaAudioShouldFallbackToFileRef.current = true;
+    });
+
+    return audioContext;
+  }, []);
+
+  const stopQAAudioPlayback = useCallback(() => {
+    if (qaAudioEndTimerRef.current !== null) {
+      window.clearTimeout(qaAudioEndTimerRef.current);
+      qaAudioEndTimerRef.current = null;
+    }
+    qaAudioTurnRef.current = null;
+    qaAudioPlaybackTimeRef.current = 0;
+    qaAudioLiveChunkCountRef.current = 0;
+    qaAudioShouldFallbackToFileRef.current = false;
+    qaPlaybackStateRef.current = { turnId: null, playing: false };
+    interviewerSpeakingRef.current = false;
+    setInterviewerSpeakingState(false);
+  }, []);
+
+  const destroyQAAudioOutput = useCallback(() => {
+    stopQAAudioPlayback();
+    const audioContext = qaAudioContextRef.current;
+    qaAudioContextRef.current = null;
+    if (audioContext && audioContext.state !== "closed") {
+      void audioContext.close();
+    }
+  }, [stopQAAudioPlayback]);
+
   const clearSessionView = useCallback(() => {
+    destroyQAAudioOutput();
     transcriptStateRef.current = createEmptyTranscriptState();
     sessionStartedAtRef.current = null;
     setIsRunning(false);
@@ -311,8 +415,14 @@ export function useMockSession(setup: SessionSetup) {
     setTranscript([]);
     setActiveTranscript(null);
     setCoachPanel(null);
+    setQAState(idleQAState);
+    setQAQuestion(null);
+    setQAFeedback(null);
+    setQAAudioUrl(null);
+    setQAAudioAutoPlay(false);
+    qaStateRef.current = idleQAState;
     setSessionState(idleSessionState);
-  }, []);
+  }, [destroyQAAudioOutput]);
 
   const sendRealtimeMessage = useCallback((message: OutboundRealtimeMessage) => {
     const socket = socketRef.current;
@@ -323,6 +433,88 @@ export function useMockSession(setup: SessionSetup) {
 
     socket.send(JSON.stringify(message));
   }, []);
+
+  const notifyQAAudioPlaybackStarted = useCallback((turnId: string) => {
+    const current = qaPlaybackStateRef.current;
+    if (current.turnId === turnId && current.playing) {
+      return;
+    }
+
+    qaPlaybackStateRef.current = { turnId, playing: true };
+    sendRealtimeMessage({
+      type: "qa_audio_playback_started",
+      turn_id: turnId,
+      timestamp_ms: Date.now(),
+    });
+  }, [sendRealtimeMessage]);
+
+  const notifyQAAudioPlaybackEnded = useCallback((turnId: string) => {
+    const current = qaPlaybackStateRef.current;
+    if (current.turnId === turnId && !current.playing) {
+      return;
+    }
+
+    qaPlaybackStateRef.current = { turnId, playing: false };
+    sendRealtimeMessage({
+      type: "qa_audio_playback_ended",
+      turn_id: turnId,
+      timestamp_ms: Date.now(),
+    });
+  }, [sendRealtimeMessage]);
+
+  const startQAAudioStream = useCallback((turnId: string) => {
+    stopQAAudioPlayback();
+    const audioContext = ensureQAAudioContext();
+    qaAudioPlaybackTimeRef.current = audioContext.currentTime;
+    qaAudioTurnRef.current = turnId;
+    qaAudioLiveChunkCountRef.current = 0;
+    qaAudioShouldFallbackToFileRef.current = false;
+    interviewerSpeakingRef.current = true;
+    setInterviewerSpeakingState(true);
+    notifyQAAudioPlaybackStarted(turnId);
+  }, [ensureQAAudioContext, notifyQAAudioPlaybackStarted, stopQAAudioPlayback]);
+
+  const appendQAAudioStreamDelta = useCallback((turnId: string, audioBase64: string, sampleRateHz: number) => {
+    const audioContext = qaAudioContextRef.current;
+    if (!audioContext || qaAudioTurnRef.current !== turnId || !audioBase64) {
+      return;
+    }
+
+    const samples = pcm16BytesToFloat32(decodeBase64ToBytes(audioBase64));
+    if (samples.length === 0) {
+      return;
+    }
+
+    const buffer = audioContext.createBuffer(1, samples.length, sampleRateHz);
+    buffer.copyToChannel(samples, 0);
+
+    const source = audioContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioContext.destination);
+
+    const startAt = Math.max(audioContext.currentTime + 0.02, qaAudioPlaybackTimeRef.current);
+    source.start(startAt);
+    qaAudioPlaybackTimeRef.current = startAt + buffer.duration;
+    qaAudioLiveChunkCountRef.current += 1;
+  }, []);
+
+  const finishQAAudioStream = useCallback((turnId: string) => {
+    const audioContext = qaAudioContextRef.current;
+    if (!audioContext || qaAudioTurnRef.current !== turnId) {
+      notifyQAAudioPlaybackEnded(turnId);
+      stopQAAudioPlayback();
+      return;
+    }
+
+    const remainingMs = Math.max((qaAudioPlaybackTimeRef.current - audioContext.currentTime) * 1000, 0);
+    if (qaAudioEndTimerRef.current !== null) {
+      window.clearTimeout(qaAudioEndTimerRef.current);
+    }
+    qaAudioEndTimerRef.current = window.setTimeout(() => {
+      notifyQAAudioPlaybackEnded(turnId);
+      stopQAAudioPlayback();
+    }, remainingMs + 120);
+  }, [notifyQAAudioPlaybackEnded, stopQAAudioPlayback]);
 
   const sendVideoFrameEvent = useCallback(() => {
     const timestamp = Date.now();
@@ -469,6 +661,17 @@ export function useMockSession(setup: SessionSetup) {
           return;
         }
 
+        if (
+          qaStateRef.current.enabled &&
+          (qaStateRef.current.phase === "preparing_context" || qaStateRef.current.phase === "ai_asking")
+        ) {
+          return;
+        }
+
+        if (interviewerSpeakingRef.current) {
+          return;
+        }
+
         const pcm16 = float32ToPcm16(normalizedSamples);
         const payload = encodeBase64(new Uint8Array(pcm16.buffer));
 
@@ -560,6 +763,7 @@ export function useMockSession(setup: SessionSetup) {
     await discardAudioCapture();
     clearSocket();
     clearSessionView();
+    ensureQAAudioContext();
     setSessionState({
       error: null,
       isConnecting: true,
@@ -583,7 +787,13 @@ export function useMockSession(setup: SessionSetup) {
           socketStatus: "connected",
         });
         setIsRunning(true);
-        sendRealtimeMessage({ type: "start_stream" });
+        sendRealtimeMessage({
+          type: "start_stream",
+          training_mode: setup.trainingMode ?? "free_speech",
+          document_name: setup.documentName ?? undefined,
+          document_text: setup.documentText ?? undefined,
+          manual_text: setup.manualText ?? undefined,
+        });
         sendVideoFrameEvent();
         mediaTimerRef.current = window.setInterval(sendVideoFrameEvent, VIDEO_FRAME_INTERVAL_MS);
 
@@ -639,6 +849,58 @@ export function useMockSession(setup: SessionSetup) {
           return;
         }
 
+        if (payload.type === "qa_state" && payload.qaState) {
+          qaStateRef.current = payload.qaState;
+          if (payload.qaState.phase === "preparing_context") {
+            stopQAAudioPlayback();
+            setQAAudioUrl(null);
+            setQAAudioAutoPlay(false);
+          }
+          setQAState(payload.qaState);
+          return;
+        }
+
+        if (payload.type === "qa_question" && payload.question) {
+          setQAAudioUrl((current) => (payload.question?.turnId && current ? null : current));
+          setQAAudioAutoPlay(false);
+          setQAQuestion(payload.question);
+          return;
+        }
+
+        if (payload.type === "qa_feedback" && payload.feedback) {
+          setQAFeedback(payload.feedback);
+          return;
+        }
+
+        if (payload.type === "qa_audio_stream_start" && payload.turnId) {
+          setQAAudioUrl(null);
+          setQAAudioAutoPlay(false);
+          startQAAudioStream(payload.turnId);
+          return;
+        }
+
+        if (payload.type === "qa_audio_stream_delta" && payload.turnId && payload.audioBase64) {
+          appendQAAudioStreamDelta(payload.turnId, payload.audioBase64, payload.sampleRateHz ?? 24000);
+          return;
+        }
+
+        if (payload.type === "qa_audio_stream_end" && payload.turnId) {
+          finishQAAudioStream(payload.turnId);
+          if (payload.audioUrl) {
+            setQAAudioUrl(resolveApiUrl(payload.audioUrl));
+            setQAAudioAutoPlay(
+              qaAudioLiveChunkCountRef.current === 0 || qaAudioShouldFallbackToFileRef.current,
+            );
+          }
+          return;
+        }
+
+        if (payload.type === "qa_audio" && payload.audioUrl) {
+          setQAAudioUrl(resolveApiUrl(payload.audioUrl));
+          setQAAudioAutoPlay(true);
+          return;
+        }
+
         if (payload.type === "session_status" && payload.status === "finished") {
           clearActiveTranscript();
           setIsRunning(false);
@@ -690,8 +952,17 @@ export function useMockSession(setup: SessionSetup) {
     sendVideoFrameEvent,
     sessionState.isConnecting,
     sessionState.isFinalizing,
+    setup.documentName,
+    setup.documentText,
     setup.language,
+    setup.manualText,
     setup.scenarioId,
+    setup.trainingMode,
+    startQAAudioStream,
+    appendQAAudioStreamDelta,
+    finishQAAudioStream,
+    ensureQAAudioContext,
+    stopQAAudioPlayback,
     startAudioCapture,
   ]);
 
@@ -746,6 +1017,78 @@ export function useMockSession(setup: SessionSetup) {
     videoFrameProviderRef.current = provider;
   }, []);
 
+  const startQA = useCallback((payload: {
+    trainingMode: TrainingMode;
+    voiceProfileId: string;
+    documentName?: string | null;
+    documentText?: string | null;
+    manualText?: string | null;
+  }) => {
+    const nextState: QAState = {
+      ...qaStateRef.current,
+      enabled: true,
+      phase: "preparing_context",
+      currentTurnId: null,
+      currentQuestion: null,
+      currentQuestionGoal: null,
+      latestFeedback: null,
+      speaking: false,
+      voiceProfileId: payload.voiceProfileId,
+    };
+    qaStateRef.current = nextState;
+    setQAState(nextState);
+    setQAQuestion(null);
+    setQAFeedback(null);
+    setQAAudioUrl(null);
+    setQAAudioAutoPlay(false);
+    sendRealtimeMessage({
+      type: "start_qa",
+      training_mode: payload.trainingMode,
+      voice_profile_id: payload.voiceProfileId,
+      document_name: payload.documentName ?? undefined,
+      document_text: payload.documentText ?? undefined,
+      manual_text: payload.manualText ?? undefined,
+    });
+  }, [sendRealtimeMessage]);
+
+  const updateQAPrewarmContext = useCallback((payload: {
+    trainingMode: TrainingMode;
+    documentName?: string | null;
+    documentText?: string | null;
+    manualText?: string | null;
+  }) => {
+    sendRealtimeMessage({
+      type: "qa_prewarm_context",
+      training_mode: payload.trainingMode,
+      document_name: payload.documentName ?? undefined,
+      document_text: payload.documentText ?? undefined,
+      manual_text: payload.manualText ?? undefined,
+    });
+  }, [sendRealtimeMessage]);
+
+  const stopQA = useCallback(() => {
+    stopQAAudioPlayback();
+    setQAState(idleQAState);
+    setQAAudioUrl(null);
+    setQAAudioAutoPlay(false);
+    setQAQuestion(null);
+    setQAFeedback(null);
+    qaStateRef.current = idleQAState;
+    sendRealtimeMessage({ type: "stop_qa" });
+  }, [sendRealtimeMessage, stopQAAudioPlayback]);
+
+  const selectVoiceProfile = useCallback((voiceProfileId: string) => {
+    sendRealtimeMessage({
+      type: "qa_select_voice_profile",
+      voice_profile_id: voiceProfileId,
+    });
+  }, [sendRealtimeMessage]);
+
+  const setInterviewerSpeaking = useCallback((value: boolean) => {
+    interviewerSpeakingRef.current = value;
+    setInterviewerSpeakingState(value);
+  }, []);
+
   const statusText = useMemo(() => {
     if (sessionState.error) {
       return sessionState.error;
@@ -770,9 +1113,10 @@ export function useMockSession(setup: SessionSetup) {
     return () => {
       clearMediaTimer();
       clearSocket();
+      stopQAAudioPlayback();
       void discardAudioCapture();
     };
-  }, [clearMediaTimer, clearSocket, discardAudioCapture]);
+  }, [clearMediaTimer, clearSocket, discardAudioCapture, stopQAAudioPlayback]);
 
   return {
     coachPanel,
@@ -787,6 +1131,19 @@ export function useMockSession(setup: SessionSetup) {
     statusText,
     transcript,
     flushTranscript,
+    qaState,
+    qaQuestion,
+    qaFeedback,
+    qaAudioUrl,
+    qaAudioAutoPlay,
+    interviewerSpeaking,
+    notifyQAAudioPlaybackEnded,
+    notifyQAAudioPlaybackStarted,
+    setInterviewerSpeaking,
+    startQA,
+    updateQAPrewarmContext,
+    stopQA,
+    selectVoiceProfile,
     registerVideoFrameProvider,
     start,
     pause,

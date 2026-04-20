@@ -3,28 +3,44 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 
-import { CameraPanel } from "@/components/session/camera-panel";
-import { DocumentStage } from "@/components/session/document-stage";
 import { HistorySidebar } from "@/components/session/history-sidebar";
 import { LiveAnalysisPanel } from "@/components/session/live-analysis-panel";
+import { QAControlBar } from "@/components/session/qa-control-bar";
+import { SessionStage } from "@/components/session/session-stage";
 import { SessionToolbar } from "@/components/session/session-toolbar";
 import { SessionControls } from "@/components/session/session-controls";
 import { useSessionResult } from "@/components/session/session-provider";
 import { TranscriptPanel } from "@/components/session/transcript-panel";
 import { useMockSession } from "@/hooks/useMockSession";
-import { getScenarios } from "@/lib/api";
+import { extractDocumentText, getQAVoiceProfiles, getScenarios } from "@/lib/api";
 import type {
   LanguageOption,
   ScenarioOption,
   ScenarioType,
   TrainingDocumentAsset,
   TrainingMode,
+  VoiceProfile,
 } from "@/types/session";
 
 interface SessionWorkspaceProps {
   defaultLanguage?: LanguageOption;
   defaultScenario?: ScenarioType;
 }
+
+const fallbackVoiceProfiles: VoiceProfile[] = [
+  {
+    id: "female_professional_01",
+    label: "女声 · 专业",
+    gender: "female",
+    style: "professional",
+  },
+  {
+    id: "male_professional_01",
+    label: "男声 · 专业",
+    gender: "male",
+    style: "professional",
+  },
+];
 
 export function SessionWorkspace({
   defaultLanguage = "zh",
@@ -34,10 +50,14 @@ export function SessionWorkspace({
   const { error: sessionError, history, saveResult } = useSessionResult();
   const [documentAsset, setDocumentAsset] = useState<TrainingDocumentAsset | null>(null);
   const [documentError, setDocumentError] = useState<string | null>(null);
+  const [documentLoading, setDocumentLoading] = useState(false);
   const [language, setLanguage] = useState<LanguageOption>(defaultLanguage);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [scenarioOpen, setScenarioOpen] = useState(false);
   const [trainingMode, setTrainingMode] = useState<TrainingMode>("free_speech");
+  const [qaEnabled, setQAEnabled] = useState(false);
+  const [voiceProfiles, setVoiceProfiles] = useState<VoiceProfile[]>(fallbackVoiceProfiles);
+  const [selectedVoiceProfileId, setSelectedVoiceProfileId] = useState<string>(fallbackVoiceProfiles[0]?.id ?? "female_professional_01");
   const [scenariosData, setScenariosData] = useState<{
     error: string | null;
     isLoading: boolean;
@@ -66,16 +86,42 @@ export function SessionWorkspace({
           items: nextScenarios,
         });
       })
-      .catch(() => {
+      .catch((loadError) => {
         if (!active) {
           return;
         }
 
         setScenariosData({
-          error: "场景加载失败",
+          error: loadError instanceof Error ? `场景加载失败：${loadError.message}` : "场景加载失败",
           isLoading: false,
           items: [],
         });
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    void getQAVoiceProfiles()
+      .then((profiles) => {
+        if (!active || profiles.length === 0) {
+          return;
+        }
+
+        setVoiceProfiles(profiles);
+        setSelectedVoiceProfileId((current) =>
+          profiles.some((profile) => profile.id === current) ? current : profiles[0]?.id ?? current,
+        );
+      })
+      .catch(() => {
+        if (!active) {
+          return;
+        }
+        setVoiceProfiles(fallbackVoiceProfiles);
       });
 
     return () => {
@@ -92,7 +138,14 @@ export function SessionWorkspace({
     return scenarios.some((item) => item.id === selectedScenarioId) ? selectedScenarioId : scenarios[0].id;
   }, [scenarios, selectedScenarioId]);
 
-  const session = useMockSession({ scenarioId, language });
+  const session = useMockSession({
+    scenarioId,
+    language,
+    trainingMode,
+    documentName: documentAsset?.name ?? null,
+    documentText: documentAsset?.extractedText ?? documentAsset?.markdownSource ?? null,
+    manualText: null,
+  });
   const {
     activeTranscript,
     coachPanel,
@@ -109,19 +162,33 @@ export function SessionWorkspace({
     start,
     statusText,
     transcript,
+    qaAudioUrl,
+    qaFeedback,
+    qaQuestion,
+    qaState,
+    qaAudioAutoPlay,
+    interviewerSpeaking,
+    notifyQAAudioPlaybackEnded,
+    notifyQAAudioPlaybackStarted,
+    selectVoiceProfile,
+    setInterviewerSpeaking,
+    startQA,
+    stopQA,
+    updateQAPrewarmContext,
   } = session;
 
   const closeHistory = () => setHistoryOpen(false);
-  const controlsDisabled = isLoading || !!error;
+  const controlsDisabled = isLoading;
   const statusMessage = useMemo(
     () =>
+      (documentLoading ? "正在抽取文档正文..." : null) ??
       documentError ??
       scenariosData.error ??
       error ??
       sessionError ??
       statusText ??
       (scenariosData.isLoading ? "场景加载中..." : null),
-    [documentError, error, scenariosData.error, scenariosData.isLoading, sessionError, statusText],
+    [documentError, documentLoading, error, scenariosData.error, scenariosData.isLoading, sessionError, statusText],
   );
 
   useEffect(() => {
@@ -143,6 +210,7 @@ export function SessionWorkspace({
     }
     setDocumentAsset(null);
     setDocumentError(null);
+    setDocumentLoading(false);
     if (documentInputRef.current) {
       documentInputRef.current.value = "";
     }
@@ -153,6 +221,47 @@ export function SessionWorkspace({
     setDocumentError(null);
   };
 
+  const handleQAToggle = () => {
+    if (qaEnabled) {
+      setQAEnabled(false);
+      if (qaState.enabled) {
+        stopQA();
+      }
+      return;
+    }
+
+    setQAEnabled(true);
+  };
+
+  const handleVoiceProfileChange = (voiceProfileId: string) => {
+    setSelectedVoiceProfileId(voiceProfileId);
+    if (sessionId) {
+      selectVoiceProfile(voiceProfileId);
+    }
+  };
+
+  useEffect(() => {
+    if (!sessionId || !isRunning || qaState.enabled) {
+      return;
+    }
+
+    updateQAPrewarmContext({
+      trainingMode,
+      documentName: documentAsset?.name ?? null,
+      documentText: documentAsset?.extractedText ?? documentAsset?.markdownSource ?? null,
+      manualText: null,
+    });
+  }, [
+    documentAsset?.extractedText,
+    documentAsset?.markdownSource,
+    documentAsset?.name,
+    isRunning,
+    qaState.enabled,
+    sessionId,
+    trainingMode,
+    updateQAPrewarmContext,
+  ]);
+
   const handleDocumentSelection = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] ?? null;
 
@@ -162,8 +271,19 @@ export function SessionWorkspace({
 
     const lowerName = file.name.toLowerCase();
     const isPdf = lowerName.endsWith(".pdf") || file.type === "application/pdf";
+    const isPowerPoint =
+      lowerName.endsWith(".ppt") ||
+      lowerName.endsWith(".pptx") ||
+      file.type === "application/vnd.ms-powerpoint" ||
+      file.type === "application/vnd.openxmlformats-officedocument.presentationml.presentation";
     const isMarkdown =
       lowerName.endsWith(".md") || lowerName.endsWith(".markdown") || file.type === "text/markdown" || file.type === "text/plain";
+
+    if (isPowerPoint) {
+      clearDocumentAsset();
+      setDocumentError("PPT / PPTX 文档上传已下线，当前只支持 PDF 和 Markdown。");
+      return;
+    }
 
     if (!isPdf && !isMarkdown) {
       clearDocumentAsset();
@@ -176,27 +296,61 @@ export function SessionWorkspace({
       currentDocumentUrlRef.current = null;
     }
 
-    if (isPdf) {
-      const objectUrl = URL.createObjectURL(file);
-      currentDocumentUrlRef.current = objectUrl;
-      setDocumentAsset({
-        kind: "pdf",
-        name: file.name,
-        objectUrl,
-        markdownSource: null,
-      });
-      setDocumentError(null);
-      return;
-    }
-
-    const markdownSource = await file.text();
-    setDocumentAsset({
-      kind: "md",
-      name: file.name,
-      objectUrl: null,
-      markdownSource,
-    });
+    setDocumentLoading(true);
     setDocumentError(null);
+
+    try {
+      const extraction = await extractDocumentText(file);
+      const textSource = extraction.text;
+
+      if (isPdf) {
+        const objectUrl = URL.createObjectURL(file);
+        currentDocumentUrlRef.current = objectUrl;
+        setDocumentAsset({
+          kind: "pdf",
+          name: file.name,
+          objectUrl,
+          markdownSource: null,
+          extractedText: textSource,
+          extractedCharCount: extraction.charCount,
+          preview: extraction.preview,
+        });
+        return;
+      }
+
+      setDocumentAsset({
+        kind: "md",
+        name: file.name,
+        objectUrl: null,
+        markdownSource: textSource,
+        extractedText: textSource,
+        extractedCharCount: extraction.charCount,
+        preview: extraction.preview,
+      });
+    } catch (extractionError) {
+      if (isPdf) {
+        const objectUrl = URL.createObjectURL(file);
+        currentDocumentUrlRef.current = objectUrl;
+        setDocumentAsset({
+          kind: "pdf",
+          name: file.name,
+          objectUrl,
+          markdownSource: null,
+          extractedText: null,
+          extractedCharCount: 0,
+          preview: {
+            kind: "pdf",
+            status: "ready",
+            message: null,
+          },
+        });
+      } else {
+        setDocumentAsset(null);
+      }
+      setDocumentError(extractionError instanceof Error ? extractionError.message : "文档正文抽取失败");
+    } finally {
+      setDocumentLoading(false);
+    }
   };
 
   const finishSession = async () => {
@@ -209,6 +363,48 @@ export function SessionWorkspace({
     } catch {
       return;
     }
+  };
+
+  const activeVoiceProfileId = qaState.voiceProfileId ?? selectedVoiceProfileId;
+  const activeVoiceProfile = voiceProfiles.find((profile) => profile.id === activeVoiceProfileId) ?? voiceProfiles[0] ?? null;
+  const avatarSrc = activeVoiceProfile?.gender === "male"
+    ? "/avatars/interviewer-male.svg"
+    : "/avatars/interviewer-female.svg";
+  const displayedQuestion = qaQuestion ?? (qaState.currentQuestion
+    ? {
+        turnId: qaState.currentTurnId ?? "qa-current",
+        questionText: qaState.currentQuestion,
+        goal: qaState.currentQuestionGoal ?? "",
+        followUp: false,
+        expectedPoints: [],
+      }
+    : qaState.phase === "preparing_context"
+      ? {
+          turnId: qaState.currentTurnId ?? "qa-preparing",
+          questionText: "AI 正在基于你刚才的演讲内容生成问题，Transcript 和 Live Coach 会继续更新。",
+          goal: "整理上下文并生成当前最合适的问题。",
+          followUp: false,
+          expectedPoints: [],
+        }
+      : null);
+  const displayedFeedback = qaFeedback ?? (qaState.latestFeedback
+    ? {
+        turnId: qaState.currentTurnId ?? "qa-current",
+        feedbackText: qaState.latestFeedback,
+        strengths: [],
+        missedPoints: [],
+        nextAction: "next_question" as const,
+      }
+    : null);
+
+  const launchQA = () => {
+    startQA({
+      trainingMode,
+      voiceProfileId: activeVoiceProfileId,
+      documentName: documentAsset?.name ?? null,
+      documentText: documentAsset?.extractedText ?? documentAsset?.markdownSource ?? null,
+      manualText: null,
+    });
   };
 
   return (
@@ -262,25 +458,23 @@ export function SessionWorkspace({
             onDocumentPick={openDocumentPicker}
             onHistoryToggle={() => setHistoryOpen((value) => !value)}
             onLanguageChange={setLanguage}
+            onQAToggle={handleQAToggle}
             onScenarioChange={setSelectedScenarioId}
             onScenarioToggle={() => setScenarioOpen((value) => !value)}
             onTrainingModeChange={handleTrainingModeChange}
+            onVoiceProfileChange={handleVoiceProfileChange}
+            qaEnabled={qaEnabled}
             scenario={scenarioId}
             scenarioOpen={scenarioOpen}
+            selectedVoiceProfileId={activeVoiceProfileId}
             scenarios={scenarios}
             trainingMode={trainingMode}
+            voiceProfiles={voiceProfiles}
           />
           <div className="min-h-0 flex-1">
-            {trainingMode === "document_speech" ? (
-              <DocumentStage
-                documentAsset={documentAsset}
-                elapsedSeconds={elapsedSeconds}
-                isRunning={isRunning && !controlsDisabled}
-                onDocumentPick={openDocumentPicker}
-                onFrameCaptureReady={registerVideoFrameProvider}
-                sessionId={sessionId}
-                statusMessage={statusMessage}
-              >
+            <SessionStage
+              avatarSrc={avatarSrc}
+              controls={
                 <SessionControls
                   disabled={controlsDisabled}
                   isRunning={isRunning}
@@ -289,36 +483,52 @@ export function SessionWorkspace({
                   onReset={reset}
                   onStart={start}
                 />
-              </DocumentStage>
-            ) : (
-              <CameraPanel
-                elapsedSeconds={elapsedSeconds}
-                isRunning={isRunning && !controlsDisabled}
-                onFrameCaptureReady={registerVideoFrameProvider}
-              >
-                <div className="space-y-2">
-                  {statusMessage ? (
-                    <div className="rounded-2xl bg-black/50 px-4 py-2 text-sm font-medium text-white backdrop-blur">
-                      {statusMessage}
-                    </div>
-                  ) : null}
-                  {sessionId ? (
-                    <div className="rounded-2xl bg-black/40 px-4 py-2 text-xs font-medium text-slate-200 backdrop-blur">
-                      Session ID: {sessionId}
-                    </div>
-                  ) : null}
-                  <SessionControls
-                    disabled={controlsDisabled}
-                    isRunning={isRunning}
-                    onFinish={finishSession}
-                    onPause={pause}
-                    onReset={reset}
-                    onStart={start}
-                  />
-                </div>
-              </CameraPanel>
-            )}
+              }
+              documentAsset={documentAsset}
+              elapsedSeconds={elapsedSeconds}
+              feedback={displayedFeedback}
+              goal={qaState.currentQuestionGoal}
+              isRunning={isRunning && !controlsDisabled}
+              phase={qaState.phase}
+              qaAudioUrl={qaAudioUrl}
+              qaAudioAutoPlay={qaAudioAutoPlay}
+              qaEnabled={qaEnabled}
+              question={displayedQuestion}
+              registerVideoFrameProvider={registerVideoFrameProvider}
+              sessionId={sessionId}
+              speaking={interviewerSpeaking}
+              statusMessage={statusMessage}
+              trainingMode={trainingMode}
+              voiceLabel={activeVoiceProfile?.label ?? null}
+              onQAAudioPlaybackEnded={notifyQAAudioPlaybackEnded}
+              onQAAudioPlaybackStarted={notifyQAAudioPlaybackStarted}
+              onDocumentPick={openDocumentPicker}
+              onInterviewerSpeakingChange={setInterviewerSpeaking}
+            />
           </div>
+          {qaEnabled ? (
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <QAControlBar
+                disabled={controlsDisabled}
+                isRunning={isRunning}
+                phase={qaState.phase}
+                qaEnabled={qaEnabled}
+                onStartQA={launchQA}
+                onStopQA={() => {
+                  setQAEnabled(false);
+                  stopQA();
+                }}
+              />
+              <SessionControls
+                disabled={controlsDisabled}
+                isRunning={isRunning}
+                onFinish={finishSession}
+                onPause={pause}
+                onReset={reset}
+                onStart={start}
+              />
+            </div>
+          ) : null}
         </section>
 
         <aside className="flex min-h-0 flex-col gap-3 pt-[52px]">

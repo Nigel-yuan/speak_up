@@ -127,12 +127,18 @@ class AliyunQAOmniRealtimeService:
         session_id: str,
         instructions: str,
         profile: VoiceProfileConfig,
+        wait_for_ack: bool = True,
     ) -> None:
         connection = self.connections.get(session_id)
         if connection is None or connection.finish_sent:
             return
         connection.profile = profile
-        await self._send_session_update(connection, instructions=instructions, profile=profile)
+        await self._send_session_update(
+            connection,
+            instructions=instructions,
+            profile=profile,
+            wait_for_ack=wait_for_ack,
+        )
 
     async def send_audio_chunk(self, session_id: str, payload: str | None) -> None:
         connection = self.connections.get(session_id)
@@ -228,10 +234,13 @@ class AliyunQAOmniRealtimeService:
         *,
         instructions: str,
         profile: VoiceProfileConfig,
+        wait_for_ack: bool = True,
     ) -> None:
         async with connection.session_update_lock:
             pending = connection.pending_session_update
             if pending is not None and not pending.done():
+                if not wait_for_ack:
+                    return
                 await pending
 
             connection.pending_session_update = asyncio.get_running_loop().create_future()
@@ -253,6 +262,14 @@ class AliyunQAOmniRealtimeService:
                     },
                 },
             )
+            if not wait_for_ack:
+                await self._emit_provider_event(
+                    connection.on_event,
+                    "session_update_enqueued",
+                    {"type": "session.update"},
+                    {"voiceProfileId": profile.profile.id},
+                )
+                return
 
             try:
                 updated_event = await asyncio.wait_for(current_pending, timeout=10)

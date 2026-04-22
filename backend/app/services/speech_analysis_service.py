@@ -59,6 +59,30 @@ class SpeechAnalysisService:
         state.chunks.append(chunk)
         return self._build_update(language, list(state.chunks))
 
+    def preview_partial(
+        self,
+        session_id: str,
+        language: LanguageOption,
+        text: str,
+        *,
+        timestamp_ms: int,
+    ) -> SpeechPanelUpdate | None:
+        clean_text = text.strip()
+        if not clean_text:
+            return None
+
+        state = self.sessions.setdefault(session_id, SpeechSessionState())
+        start_ms = max(0, timestamp_ms - 2500)
+        partial_chunk = TranscriptChunk(
+            id="speech-preview-partial",
+            speaker="user",
+            text=clean_text,
+            timestampLabel="",
+            startMs=start_ms,
+            endMs=max(timestamp_ms, start_ms + 1),
+        )
+        return self._build_update(language, [*state.chunks, partial_chunk])
+
     def _build_update(self, language: LanguageOption, chunks: list[TranscriptChunk]) -> SpeechPanelUpdate:
         units_per_chunk = [self._count_units(language, chunk.text) for chunk in chunks]
         total_units = sum(units_per_chunk)

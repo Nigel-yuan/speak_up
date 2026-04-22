@@ -55,6 +55,36 @@
 3. `session_manager` 同时启动 QA prewarm sidecar
 4. prewarm 周期性刷新 `ReferenceBrief`
 
+### 3.1.1 prewarm 的工程边界
+
+`prewarm / prepare_pack` 现在是 **软旁路**，不是主问答链路里的同步步骤。
+
+它的特点：
+
+- 由 [session_manager.py](/Users/bytedance/my_project/speak_up/backend/app/services/session_manager.py:1208) 的后台 task 触发
+- 主问答推进不会直接 `await` 它
+- `qa.auto_advance` 和 `_commit_qa_user_turn()` 也不会等它完成
+- prewarm 完成后只更新内存里的 `prewarm_brief`，不会自己立刻推一轮 provider `session.update`
+
+但它也不是硬隔离 lane：
+
+- 还在同一个后端进程里跑
+- 仍然会更新 `session.prewarm_brief / session.brief`
+- 仍然会占用同一个上游模型账号、网络和事件循环资源
+
+所以从控制流上，它是旁路；从资源隔离上，它不是完全独立。
+
+当前对 provider 的 instructions 刷新，只保留在真正进入下一问的主链路里：
+
+- 用户回答 commit 前
+- 静默兜底 commit 前
+- 启动 QA 时
+
+其中：
+
+- 启动 QA 和显式配置变更仍然同步等待 provider 确认
+- 下一问 commit 前的 instructions refresh 改为非阻塞发送，不再同步等待 `session.updated` ack
+
 ### 3.2 进入 QA
 
 1. 前端发送 `start_qa`
@@ -83,7 +113,7 @@
 
 - 如果 `speech_stopped` 后当前答案不是空/语气词：
   - 直接进入 `QA_AUTO_ADVANCE_DELAY_MS`
-  - 当前默认是 `2000ms`
+  - 当前默认是 `1200ms`
 - 如果长时间没有有效回答：
   - 进入 `QA_SILENCE_FALLBACK_DELAY_MS`
   - 当前默认是 `10000ms`
@@ -157,8 +187,20 @@
 
 - `QA_PREWARM_INTERVAL_SECONDS=20`
 - `QA_PREWARM_TRIGGER_DELAY_MS=1500`
-- `QA_AUTO_ADVANCE_DELAY_MS=2000`
+- `QA_PREWARM_MIN_CHARS=120`
+- `QA_AUTO_ADVANCE_DELAY_MS=1200`
 - `QA_RESPONSE_DONE_AUDIO_GRACE_MS=1200`
 - `QA_SILENCE_FALLBACK_DELAY_MS=10000`
+- `QA_PREWARM_MIN_DELTA_CHARS=40`
 - `QA_MAX_QUESTION_TOPICS=3`
 - `QA_MAX_FOLLOW_UPS_PER_QUESTION=3`
+
+### 7.1 “短内容” 当前怎么判定
+
+当前 `prewarm` 的跳过条件在 [qa_mode_orchestrator.py](/Users/bytedance/my_project/speak_up/backend/app/services/qa_mode_orchestrator.py:199)：
+
+- `combined_chars < 120`：`too_short`
+- 距离上次 prewarm 新增不到 `40` 字：`small_delta`
+
+也就是现在代码里的“短内容”，就是当前可用上下文总字数少于 `120`。
+这个判断只影响 prewarm，不影响用户回答是否被自动推进。

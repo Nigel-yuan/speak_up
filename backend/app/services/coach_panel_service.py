@@ -43,6 +43,8 @@ class CoachPanelService:
         language: LanguageOption,
         update: SpeechPanelUpdate,
         updated_at_ms: int,
+        *,
+        allow_replace_omni: bool = True,
     ) -> CoachPanelState | None:
         session = self._ensure_session(session_id, language)
         voice_status, voice_headline, voice_detail = self._sanitize_dimension_copy(
@@ -59,24 +61,44 @@ class CoachPanelService:
             update.content.headline,
             update.content.detail,
         )
+        next_voice = (
+            session.panel.voicePacing
+            if not allow_replace_omni and session.panel.voicePacing.source == "omni-coach"
+            else self._build_dimension(
+                "voice_pacing",
+                voice_status,
+                voice_headline,
+                voice_detail,
+                updated_at_ms,
+                "speech-rule",
+                sub_dimension_id=None,
+                signal_polarity=None,
+                severity=None,
+                confidence=None,
+                evidence_text=None,
+            )
+        )
+        next_content = (
+            session.panel.contentExpression
+            if not allow_replace_omni and session.panel.contentExpression.source == "omni-coach"
+            else self._build_dimension(
+                "content_expression",
+                content_status,
+                content_headline,
+                content_detail,
+                updated_at_ms,
+                "speech-rule",
+                sub_dimension_id=None,
+                signal_polarity=None,
+                severity=None,
+                confidence=None,
+                evidence_text=None,
+            )
+        )
         next_panel = session.panel.model_copy(
             update={
-                "voicePacing": self._build_dimension(
-                    "voice_pacing",
-                    voice_status,
-                    voice_headline,
-                    voice_detail,
-                    updated_at_ms,
-                    "speech-rule",
-                ),
-                "contentExpression": self._build_dimension(
-                    "content_expression",
-                    content_status,
-                    content_headline,
-                    content_detail,
-                    updated_at_ms,
-                    "speech-rule",
-                ),
+                "voicePacing": next_voice,
+                "contentExpression": next_content,
             }
         )
         return self._commit_panel(session_id, next_panel)
@@ -109,6 +131,11 @@ class CoachPanelService:
                 detail,
                 updated_at_ms,
                 "omni-coach",
+                sub_dimension_id=dimension_patch.subDimensionId,
+                signal_polarity=dimension_patch.signalPolarity,
+                severity=dimension_patch.severity,
+                confidence=dimension_patch.confidence,
+                evidence_text=dimension_patch.evidenceText,
             )
             next_panel = self._set_dimension(next_panel, next_dimension)
 
@@ -152,6 +179,11 @@ class CoachPanelService:
                 self._text(language, "保持当前节奏", "Keep your current rhythm"),
                 0,
                 "system",
+                sub_dimension_id=None,
+                signal_polarity=None,
+                severity=None,
+                confidence=None,
+                evidence_text=None,
             ),
             voicePacing=self._build_dimension(
                 "voice_pacing",
@@ -160,6 +192,11 @@ class CoachPanelService:
                 self._text(language, "保持当前节奏", "Keep your current rhythm"),
                 0,
                 "system",
+                sub_dimension_id=None,
+                signal_polarity=None,
+                severity=None,
+                confidence=None,
+                evidence_text=None,
             ),
             contentExpression=self._build_dimension(
                 "content_expression",
@@ -168,6 +205,11 @@ class CoachPanelService:
                 self._text(language, "继续往下讲，稍后更新这一项反馈", "Keep going and this card will update shortly"),
                 0,
                 "system",
+                sub_dimension_id=None,
+                signal_polarity=None,
+                severity=None,
+                confidence=None,
+                evidence_text=None,
             ),
         )
 
@@ -242,6 +284,12 @@ class CoachPanelService:
         detail: str,
         updated_at_ms: int,
         source: str,
+        *,
+        sub_dimension_id: str | None,
+        signal_polarity: str | None,
+        severity: str | None,
+        confidence: float | None,
+        evidence_text: str | None,
     ) -> CoachDimensionState:
         return CoachDimensionState(
             id=dimension_id,
@@ -250,6 +298,11 @@ class CoachPanelService:
             detail=detail,
             updatedAtMs=updated_at_ms,
             source=source,
+            subDimensionId=sub_dimension_id,
+            signalPolarity=signal_polarity,
+            severity=severity,
+            confidence=confidence,
+            evidenceText=evidence_text,
         )
 
     @staticmethod

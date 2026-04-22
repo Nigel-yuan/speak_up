@@ -17,6 +17,7 @@ from app.schemas import (
     QAAudioStreamDeltaEvent,
     QAAudioStreamEndEvent,
     QAAudioStreamStartEvent,
+    QAQuestion,
     RealtimeSession,
     RealtimeStatusEvent,
     LanguageOption,
@@ -32,10 +33,12 @@ from app.services.omni_service import (
     AliyunOmniCoachService,
     OmniCoachUpdate,
     is_omni_account_access_denied,
+    is_omni_body_append_image_before_audio_error,
     is_omni_body_buffer_too_small_error,
     is_omni_internal_service_error,
 )
 from app.services.qa_mode_orchestrator import QAModeOrchestrator
+from app.services.report_job_service import ReportJobService
 from app.services.speech_analysis_service import SpeechAnalysisService
 from app.services.stt_service import ProviderTranscriptResult, build_stt_service
 
@@ -58,6 +61,7 @@ class SessionRecord:
     body_lane_retry_after_monotonic: float = 0.0
     body_lane_internal_error_count: int = 0
     body_lane_last_error_at_monotonic: float = 0.0
+    speech_preview_last_update_ms: int = 0
     transcript_chunks: list[TranscriptChunk] = field(default_factory=list)
     sockets: list[WebSocket] = field(default_factory=list, repr=False)
 
@@ -75,7 +79,7 @@ class SessionRecord:
 
 class SessionManager:
     FILLER_TOKENS = {
-        "zh": {"嗯", "啊", "额", "呃", "然后", "就是", "哦", "诶", "欸", "哎", "唉", "hmm", "hm", "hmmm", "mhm", "mm"},
+        "zh": {"嗯", "啊", "额", "呃", "然后", "就是", "哦", "诶", "欸", "哎", "唉", "hmm", "hm", "hmmm", "mhm", "mm", "uh", "um"},
         "en": {"um", "uh", "well", "so", "hmm", "hm", "hmmm", "mhm", "mm"},
     }
     QA_FALLBACK_FILLER_TOKENS = {
@@ -100,6 +104,8 @@ class SessionManager:
             "hmmm",
             "mhm",
             "mm",
+            "uh",
+            "um",
         },
         "en": {"um", "uh", "well", "so", "ok", "okay", "sure", "got it", "hmm", "hm", "hmmm", "mhm", "mm"},
     }
@@ -119,7 +125,7 @@ class SessionManager:
             0.0,
             float(os.getenv("QA_PREWARM_TRIGGER_DELAY_MS", "1500")) / 1000,
         )
-        self.qa_auto_advance_delay_seconds = max(2.0, float(os.getenv("QA_AUTO_ADVANCE_DELAY_MS", "2000")) / 1000)
+        self.qa_auto_advance_delay_seconds = max(1.0, float(os.getenv("QA_AUTO_ADVANCE_DELAY_MS", "1200")) / 1000)
         self.qa_response_done_audio_grace_seconds = max(
             0.2,
             float(os.getenv("QA_RESPONSE_DONE_AUDIO_GRACE_MS", "1200")) / 1000,
@@ -146,6 +152,7 @@ class SessionManager:
         self.speech_analysis_service = SpeechAnalysisService()
         self.coach_panel_service = CoachPanelService()
         self.qa_mode_orchestrator = QAModeOrchestrator()
+        self.report_job_service = ReportJobService()
 
     def create_session(self, scenario_id: ScenarioType, language: LanguageOption) -> SessionRecord:
         session_id = uuid4().hex
@@ -167,6 +174,9 @@ class SessionManager:
         if session is None:
             return None
 
+        session.status = "finished"
+        await self._mark_report_session_finished(session, self._build_elapsed_ms(session))
+
         try:
             await self.stt_service.finish_session(session_id)
         except Exception as error:
@@ -185,7 +195,6 @@ class SessionManager:
         except Exception:
             pass
 
-        session.status = "finished"
         self._cancel_qa_prewarm_task(session_id)
         self._cancel_qa_prewarm_refresh_task(session_id)
         self._clear_qa_runtime_state(session_id)
@@ -231,6 +240,8 @@ class SessionManager:
             self.speech_analysis_service.close_session(session.session_id)
             self.coach_panel_service.close_session(session.session_id)
             self.qa_mode_orchestrator.close_session(session.session_id)
+            if session.status != "finished":
+                self.report_job_service.cancel_session(session.session_id)
             asyncio.create_task(self.stt_service.close_session(session.session_id))
             asyncio.create_task(self.omni_coach_service.close_session(session.session_id))
             asyncio.create_task(self.omni_body_service.close_session(session.session_id))
@@ -300,6 +311,7 @@ class SessionManager:
             session.status = "streaming"
             session.started_at_monotonic = monotonic()
             session.body_lane_retry_after_monotonic = 0.0
+            self.report_job_service.start_periodic_build(session.session_id)
             self._launch_qa_prewarm_task(session)
             self._schedule_qa_prewarm_refresh(session.session_id, reason="stream_started", delay_seconds=0.0)
             await self.broadcast_status(session)
@@ -365,7 +377,7 @@ class SessionManager:
                 manual_text=message.manual_text,
             )
             for event in events:
-                await self._broadcast(session, event.model_dump())
+                await self._broadcast_runtime_event(session, event)
             try:
                 await self._connect_qa_realtime_session(session)
                 await self._bootstrap_qa_first_question(session)
@@ -373,7 +385,7 @@ class SessionManager:
                 logger.exception("qa.realtime.start_failed session=%s error=%s", session.session_id, error)
                 rollback_events = self.qa_mode_orchestrator.stop_qa(session_id=session.session_id)
                 for event in rollback_events:
-                    await self._broadcast(session, event.model_dump())
+                    await self._broadcast_runtime_event(session, event)
                 await self._broadcast(session, ErrorEvent(message=f"启动问答失败：{error}").model_dump())
             return
 
@@ -402,7 +414,7 @@ class SessionManager:
             if self.qa_mode_orchestrator.is_enabled(session.session_id):
                 events = self.qa_mode_orchestrator.prepare_next_question(session_id=session.session_id)
                 for event in events:
-                    await self._broadcast(session, event.model_dump())
+                    await self._broadcast_runtime_event(session, event)
                 await self._bootstrap_qa_first_question(session)
             return
 
@@ -420,7 +432,7 @@ class SessionManager:
                 voice_profile_id=message.voice_profile_id,
             )
             for event in events:
-                await self._broadcast(session, event.model_dump())
+                await self._broadcast_runtime_event(session, event)
             if self.qa_mode_orchestrator.is_enabled(session.session_id):
                 await self._refresh_qa_realtime_instructions(session)
             return
@@ -438,7 +450,7 @@ class SessionManager:
             await self.qa_mode_orchestrator.qa_omni_service.close_session(session.session_id)
             events = self.qa_mode_orchestrator.stop_qa(session_id=session.session_id)
             for event in events:
-                await self._broadcast(session, event.model_dump())
+                await self._broadcast_runtime_event(session, event)
             return
 
         await websocket.send_json(ErrorEvent(message="unsupported message type").model_dump())
@@ -451,7 +463,36 @@ class SessionManager:
             self.qa_mode_orchestrator.update_live_partial_answer(session.session_id, text)
             self._cancel_qa_auto_advance_task(session.session_id)
             self._schedule_qa_silence_fallback(session, reason="user_partial")
+        await self._maybe_broadcast_speech_preview(session, text)
         await self._broadcast(session, TranscriptPartialEvent(text=text).model_dump())
+
+    async def _maybe_broadcast_speech_preview(self, session: SessionRecord, text: str) -> None:
+        if session.status != "streaming" or not text.strip():
+            return
+
+        now_ms = self._build_elapsed_ms(session)
+        if session.speech_preview_last_update_ms and now_ms - session.speech_preview_last_update_ms < 800:
+            return
+
+        session.speech_preview_last_update_ms = now_ms
+        speech_update = self.speech_analysis_service.preview_partial(
+            session.session_id,
+            session.language,
+            text,
+            timestamp_ms=now_ms,
+        )
+        if speech_update is None:
+            return
+
+        coach_panel = self.coach_panel_service.update_from_speech(
+            session.session_id,
+            session.language,
+            speech_update,
+            now_ms,
+            allow_replace_omni=False,
+        )
+        if coach_panel is not None:
+            await self._broadcast(session, CoachPanelEvent(coachPanel=coach_panel).model_dump())
 
     async def broadcast_transcript(self, session: SessionRecord, chunk: TranscriptChunk) -> None:
         previous_chunk = session.transcript_chunks[-1] if session.transcript_chunks else None
@@ -459,6 +500,7 @@ class SessionManager:
             merged_chunk = self._merge_transcript_chunks(session.language, previous_chunk, chunk)
             session.transcript_chunks[-1] = merged_chunk
             await self._broadcast(session, TranscriptFinalEvent(chunk=merged_chunk, replacePrevious=True).model_dump())
+            await self._record_report_transcript_chunk(session.session_id, merged_chunk, replace_previous=True)
             accepted_for_qa = self._accept_qa_user_transcript(session, merged_chunk)
             if accepted_for_qa:
                 self.qa_mode_orchestrator.replace_last_transcript_chunk(session.session_id, merged_chunk)
@@ -491,6 +533,7 @@ class SessionManager:
         session.transcript_count += 1
         session.transcript_chunks.append(chunk)
         await self._broadcast(session, TranscriptFinalEvent(chunk=chunk).model_dump())
+        await self._record_report_transcript_chunk(session.session_id, chunk, replace_previous=False)
         accepted_for_qa = self._accept_qa_user_transcript(session, chunk)
         if accepted_for_qa:
             self.qa_mode_orchestrator.ingest_transcript_chunk(session.session_id, chunk)
@@ -539,6 +582,7 @@ class SessionManager:
         updated_at_ms = self._build_elapsed_ms(session)
 
         if update.patch is not None:
+            await self._record_report_coach_patch(session, update.patch, updated_at_ms)
             coach_panel = self.coach_panel_service.update_from_omni_patch(
                 session.session_id,
                 session.language,
@@ -546,10 +590,110 @@ class SessionManager:
                 updated_at_ms,
             )
             if coach_panel is not None:
+                await self._record_report_panel_snapshot(session, coach_panel, updated_at_ms)
                 await self._broadcast(session, CoachPanelEvent(coachPanel=coach_panel).model_dump())
 
     async def _record_omni_error(self, session: SessionRecord, message: str) -> None:
         await self._broadcast(session, ErrorEvent(message=message).model_dump())
+
+    async def _record_report_transcript_chunk(
+        self,
+        session_id: str,
+        chunk: TranscriptChunk,
+        *,
+        replace_previous: bool,
+    ) -> None:
+        try:
+            await self.report_job_service.record_transcript_chunk(
+                session_id,
+                chunk,
+                replace_previous=replace_previous,
+            )
+        except Exception as error:
+            logger.exception(
+                "report.artifact.transcript_failed session=%s replace_previous=%s error=%s",
+                session_id,
+                replace_previous,
+                error,
+            )
+
+    async def _record_report_coach_patch(
+        self,
+        session: SessionRecord,
+        patch,
+        timestamp_ms: int,
+    ) -> None:
+        try:
+            await self.report_job_service.record_coach_patch(
+                session_id=session.session_id,
+                patch=patch,
+                timestamp_ms=timestamp_ms,
+                source="omni-coach",
+            )
+        except Exception as error:
+            logger.exception(
+                "report.artifact.coach_patch_failed session=%s error=%s",
+                session.session_id,
+                error,
+            )
+
+    async def _record_report_qa_question_payload(self, session: SessionRecord, payload: dict) -> None:
+        try:
+            if payload.get("type") != "qa_question":
+                return
+            if not self.qa_mode_orchestrator.is_user_answering(session.session_id):
+                return
+            question = payload.get("question")
+            if not isinstance(question, dict):
+                return
+            await self.report_job_service.record_qa_question(
+                session_id=session.session_id,
+                question=QAQuestion.model_validate(question),
+                timestamp_ms=self._build_elapsed_ms(session),
+            )
+        except Exception as error:
+            logger.exception(
+                "report.artifact.qa_question_failed session=%s error=%s",
+                session.session_id,
+                error,
+            )
+
+    async def _broadcast_runtime_event(self, session: SessionRecord, event) -> None:
+        payload = event if isinstance(event, dict) else event.model_dump()
+        await self._broadcast(session, payload)
+        await self._record_report_qa_question_payload(session, payload)
+
+    async def _record_report_panel_snapshot(
+        self,
+        session: SessionRecord,
+        panel,
+        timestamp_ms: int,
+    ) -> None:
+        try:
+            await self.report_job_service.record_panel_snapshot(
+                session_id=session.session_id,
+                panel=panel,
+                timestamp_ms=timestamp_ms,
+            )
+        except Exception as error:
+            logger.exception(
+                "report.artifact.panel_snapshot_failed session=%s error=%s",
+                session.session_id,
+                error,
+            )
+
+    async def _mark_report_session_finished(self, session: SessionRecord, timestamp_ms: int) -> None:
+        try:
+            await self.report_job_service.mark_session_finished(
+                session.session_id,
+                timestamp_ms=timestamp_ms,
+            )
+        except Exception as error:
+            logger.exception(
+                "report.session_finished_failed session=%s error=%s",
+                session.session_id,
+                error,
+            )
 
     async def _handle_omni_connect_failure(self, session: SessionRecord, lane: str, error: Exception) -> None:
         lane_label = "Omni coach" if lane == "coach" else "Omni body coach"
@@ -571,6 +715,13 @@ class SessionManager:
             if is_omni_body_buffer_too_small_error(message):
                 logger.warning(
                     "omni.body.audio_underflow.soft_ignored session=%s message=%s",
+                    session.session_id,
+                    message[:240],
+                )
+                return
+            if is_omni_body_append_image_before_audio_error(message):
+                logger.warning(
+                    "omni.body.append_image_before_audio.soft_ignored session=%s message=%s",
                     session.session_id,
                     message[:240],
                 )
@@ -663,7 +814,7 @@ class SessionManager:
             len(session.transcript_chunks),
         )
 
-    async def _refresh_qa_realtime_instructions(self, session: SessionRecord) -> None:
+    async def _refresh_qa_realtime_instructions(self, session: SessionRecord, *, wait_for_provider_ack: bool = True) -> None:
         if not self.qa_mode_orchestrator.qa_omni_service.is_connected(session.session_id):
             return
         instructions = self.qa_mode_orchestrator.build_realtime_instructions(
@@ -675,12 +826,14 @@ class SessionManager:
             session_id=session.session_id,
             instructions=instructions,
             profile=profile,
+            wait_for_ack=wait_for_provider_ack,
         )
         logger.info(
-            "qa.realtime.instructions_updated session=%s brief_builds=%s transcript_chunks=%s",
+            "qa.realtime.instructions_updated session=%s brief_builds=%s transcript_chunks=%s wait_ack=%s",
             session.session_id,
             self.qa_mode_orchestrator.sessions[session.session_id].prewarm_build_count,
             len(session.transcript_chunks),
+            wait_for_provider_ack,
         )
 
     async def _bootstrap_qa_first_question(self, session: SessionRecord) -> None:
@@ -691,7 +844,7 @@ class SessionManager:
     async def _commit_qa_user_turn(self, session: SessionRecord) -> None:
         plan, events = self.qa_mode_orchestrator.prepare_after_answer(session_id=session.session_id)
         for event in events:
-            await self._broadcast(session, event.model_dump())
+            await self._broadcast_runtime_event(session, event)
         if plan.action == "end_qa":
             await self.qa_mode_orchestrator.qa_omni_service.close_session(session.session_id)
             logger.info(
@@ -701,7 +854,7 @@ class SessionManager:
                 self.qa_mode_orchestrator.sessions[session.session_id].max_follow_ups_per_question,
             )
             return
-        await self._refresh_qa_realtime_instructions(session)
+        await self._refresh_qa_realtime_instructions(session, wait_for_provider_ack=False)
         committed = await self.qa_mode_orchestrator.qa_omni_service.commit_user_turn(session.session_id)
         if not committed:
             raise RuntimeError("QA Omni Realtime 当前没有可提交的用户音频")
@@ -726,7 +879,7 @@ class SessionManager:
             text=pending[1],
             is_final=True,
         ):
-            await self._broadcast(session, next_event.model_dump())
+            await self._broadcast_runtime_event(session, next_event)
         self._mark_qa_answer_window_open(session)
         self._schedule_qa_silence_fallback(session, reason=reason)
         logger.info(
@@ -870,7 +1023,7 @@ class SessionManager:
                     text=display_text,
                     is_final=False,
                 ):
-                    await self._broadcast(session, next_event.model_dump())
+                    await self._broadcast_runtime_event(session, next_event)
                 logger.info(
                     "qa.realtime.response_done.deferred_until_audio_end session=%s turn=%s text=%s",
                     session_id,
@@ -884,7 +1037,7 @@ class SessionManager:
                 text=display_text,
                 is_final=False,
             ):
-                await self._broadcast(session, next_event.model_dump())
+                await self._broadcast_runtime_event(session, next_event)
             self._schedule_qa_response_done_grace(session, turn_id=turn_id)
             logger.info(
                 "qa.realtime.response_done.wait_audio_grace session=%s turn=%s text=%s",
@@ -912,7 +1065,7 @@ class SessionManager:
         await self.qa_mode_orchestrator.qa_omni_service.close_session(session_id)
         if self.qa_mode_orchestrator.is_enabled(session_id):
             for event in self.qa_mode_orchestrator.stop_qa(session_id=session_id):
-                await self._broadcast(session, event.model_dump())
+                await self._broadcast_runtime_event(session, event)
 
     async def _handle_stt_provider_event(
         self,
@@ -1064,8 +1217,6 @@ class SessionManager:
                     session_id=session_id,
                     transcript_chunks=list(session.transcript_chunks),
                 )
-                if self.qa_mode_orchestrator.is_enabled(session_id) and not self.qa_mode_orchestrator.is_ai_asking(session_id):
-                    await self._refresh_qa_realtime_instructions(session)
                 await asyncio.sleep(self.qa_prewarm_interval_seconds)
         except asyncio.CancelledError:
             logger.info("qa.prewarm_task.cancelled session=%s", session_id)
@@ -1085,8 +1236,6 @@ class SessionManager:
                 session_id=session_id,
                 transcript_chunks=list(session.transcript_chunks),
             )
-            if self.qa_mode_orchestrator.is_enabled(session_id) and not self.qa_mode_orchestrator.is_ai_asking(session_id):
-                await self._refresh_qa_realtime_instructions(session)
         except asyncio.CancelledError:
             logger.info("qa.prewarm_refresh.cancelled session=%s", session_id)
             return
@@ -1220,7 +1369,7 @@ class SessionManager:
                 await self.qa_mode_orchestrator.qa_omni_service.clear_input_audio_buffer(session.session_id)
             plan, events = self.qa_mode_orchestrator.prepare_after_silence_timeout(session_id=session_id)
             for event in events:
-                await self._broadcast(session, event.model_dump())
+                await self._broadcast_runtime_event(session, event)
             if plan.action == "end_qa":
                 await self.qa_mode_orchestrator.qa_omni_service.close_session(session.session_id)
                 logger.info(
@@ -1230,7 +1379,7 @@ class SessionManager:
                     self.qa_mode_orchestrator.sessions[session.session_id].max_follow_ups_per_question,
                 )
                 return
-            await self._refresh_qa_realtime_instructions(session)
+            await self._refresh_qa_realtime_instructions(session, wait_for_provider_ack=False)
             committed = await self.qa_mode_orchestrator.qa_omni_service.commit_silent_user_turn(session.session_id)
             if not committed:
                 raise RuntimeError("QA Omni Realtime 静默超时跳题提交失败")

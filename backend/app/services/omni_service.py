@@ -39,6 +39,7 @@ OmniAnalysisScope = Literal["voice_content", "body_visual"]
 OMNI_ACCOUNT_ACCESS_DENIED_MARKER = "access denied, please make sure your account is in good standing"
 OMNI_INTERNAL_SERVICE_ERROR_MARKER = "internal service error"
 OMNI_BODY_BUFFER_TOO_SMALL_MARKER = "buffer too small, or have no audio"
+OMNI_BODY_APPEND_IMAGE_BEFORE_AUDIO_MARKER = "append image before append audio"
 
 
 def is_omni_account_access_denied(message: str) -> bool:
@@ -51,6 +52,10 @@ def is_omni_internal_service_error(message: str) -> bool:
 
 def is_omni_body_buffer_too_small_error(message: str) -> bool:
     return OMNI_BODY_BUFFER_TOO_SMALL_MARKER in message.lower()
+
+
+def is_omni_body_append_image_before_audio_error(message: str) -> bool:
+    return OMNI_BODY_APPEND_IMAGE_BEFORE_AUDIO_MARKER in message.lower()
 
 
 @dataclass
@@ -74,6 +79,8 @@ class AliyunOmniCoachConnection:
     pending_visual_refresh: bool = False
     buffered_audio_payloads: list[tuple[float, str]] = field(default_factory=list)
     latest_image_base64: str | None = None
+    latest_image_dirty: bool = False
+    visual_refresh_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
 
 class AliyunOmniCoachService:
@@ -198,6 +205,8 @@ class AliyunOmniCoachService:
         if self.analysis_scope == "body_visual":
             connection.has_received_audio = True
             self._buffer_body_audio_payload(connection, payload.split(",", 1)[-1])
+            if self.turn_mode == "manual" and connection.latest_image_base64:
+                await self._maybe_request_visual_refresh(connection)
             return
 
         await self._send_json(
@@ -216,6 +225,9 @@ class AliyunOmniCoachService:
         if self.analysis_scope != "body_visual":
             return
         connection.latest_image_base64 = image_base64.split(",", 1)[-1]
+        connection.latest_image_dirty = True
+        if not connection.has_received_audio:
+            return
         if self.turn_mode == "manual":
             await self._maybe_request_visual_refresh(connection)
 
@@ -310,6 +322,11 @@ class AliyunOmniCoachService:
                 if event_type == "error":
                     connection.visual_request_in_flight = False
                     message = self._extract_error_message(event)
+                    if self.analysis_scope == "body_visual" and (
+                        is_omni_body_buffer_too_small_error(message)
+                        or is_omni_body_append_image_before_audio_error(message)
+                    ):
+                        connection.latest_image_dirty = True
                     await self._emit_provider_event(
                         connection.on_event,
                         "error",
@@ -380,6 +397,11 @@ class AliyunOmniCoachService:
                 "status": dimension.status,
                 "headline": AliyunOmniCoachService._normalize_text(dimension.headline),
                 "detail": AliyunOmniCoachService._normalize_text(dimension.detail),
+                "subDimensionId": dimension.subDimensionId or "",
+                "signalPolarity": dimension.signalPolarity or "",
+                "severity": dimension.severity or "",
+                "confidence": round(dimension.confidence or 0.0, 3),
+                "evidenceText": AliyunOmniCoachService._normalize_text(dimension.evidenceText or ""),
             }
             for dimension in patch.dimensions
         ]
@@ -419,6 +441,8 @@ class AliyunOmniCoachService:
             return None
 
         allowed_statuses = {"doing_well", "stable", "adjust_now", "analyzing"}
+        allowed_polarities = {"positive", "neutral", "negative"}
+        allowed_severities = {"low", "medium", "high"}
         dimension_ids = ("body_expression", "voice_pacing", "content_expression")
         dimensions: list[CoachPanelPatchDimension] = []
 
@@ -430,9 +454,36 @@ class AliyunOmniCoachService:
             status = str(raw_dimension.get("status", "")).strip().lower()
             headline = str(raw_dimension.get("headline", "")).strip()
             detail = str(raw_dimension.get("detail", "")).strip()
+            sub_dimension_id = (
+                str(raw_dimension.get("sub_dimension_id") or raw_dimension.get("subDimensionId") or "").strip() or None
+            )
+            signal_polarity = (
+                str(raw_dimension.get("signal_polarity") or raw_dimension.get("signalPolarity") or "").strip().lower()
+                or None
+            )
+            severity = (
+                str(raw_dimension.get("severity") or "").strip().lower()
+                or None
+            )
+            confidence_raw = raw_dimension.get("confidence")
+            confidence: float | None
+            if confidence_raw is None or confidence_raw == "":
+                confidence = None
+            else:
+                try:
+                    confidence = max(0.0, min(1.0, float(confidence_raw)))
+                except (TypeError, ValueError):
+                    confidence = None
+            evidence_text = (
+                str(raw_dimension.get("evidence_text") or raw_dimension.get("evidenceText") or "").strip() or None
+            )
 
             if status not in allowed_statuses or not headline or not detail:
                 continue
+            if signal_polarity not in allowed_polarities:
+                signal_polarity = None
+            if severity not in allowed_severities:
+                severity = None
 
             dimensions.append(
                 CoachPanelPatchDimension(
@@ -440,6 +491,11 @@ class AliyunOmniCoachService:
                     status=cast(Any, status),
                     headline=headline,
                     detail=detail,
+                    subDimensionId=sub_dimension_id,
+                    signalPolarity=cast(Any, signal_polarity),
+                    severity=cast(Any, severity),
+                    confidence=confidence,
+                    evidenceText=evidence_text,
                 )
             )
 
@@ -469,9 +525,9 @@ class AliyunOmniCoachService:
         scenario_label = SCENARIO_LABELS.get(scenario_id, "通用演讲训练")
         language_label = LANGUAGE_LABELS.get(language, "Chinese")
         example = (
-            '{"should_emit":true,"dimensions":{"voice_pacing":{"status":"adjust_now","headline":"减少重复起句","detail":"这句直接说完，别重起。"},"content_expression":{"status":"stable","headline":"先讲结论","detail":"结论再往前放一点。"}}}'
+            '{"should_emit":true,"dimensions":{"voice_pacing":{"status":"adjust_now","headline":"减少重复起句","detail":"这句直接说完，别重起。","sub_dimension_id":"fluency","signal_polarity":"negative","severity":"medium","confidence":0.82,"evidence_text":"出现了重复起句"},"content_expression":{"status":"stable","headline":"先讲结论","detail":"结论再往前放一点。","sub_dimension_id":"point_clarity","signal_polarity":"neutral","severity":"low","confidence":0.71,"evidence_text":"背景铺垫略长"}}}'
             if language == "zh"
-            else '{"should_emit":true,"dimensions":{"voice_pacing":{"status":"adjust_now","headline":"Stop restarting the line","detail":"Finish the sentence instead of restarting."},"content_expression":{"status":"stable","headline":"Lead with the point","detail":"Move the conclusion a little earlier."}}}'
+            else '{"should_emit":true,"dimensions":{"voice_pacing":{"status":"adjust_now","headline":"Stop restarting the line","detail":"Finish the sentence instead of restarting.","sub_dimension_id":"fluency","signal_polarity":"negative","severity":"medium","confidence":0.82,"evidence_text":"multiple line restarts"},"content_expression":{"status":"stable","headline":"Lead with the point","detail":"Move the conclusion a little earlier.","sub_dimension_id":"point_clarity","signal_polarity":"neutral","severity":"low","confidence":0.71,"evidence_text":"setup is longer than the point"}}}'
         )
 
         return (
@@ -529,10 +585,14 @@ class AliyunOmniCoachService:
             "Do not ask follow-up questions. "
             "Do not produce multiple bullets. "
             "Return JSON only with this schema: "
-            '{"should_emit":boolean,"dimensions":{"voice_pacing":{"status":"doing_well|stable|adjust_now|analyzing","headline":"string","detail":"string"},"content_expression":{"status":"doing_well|stable|adjust_now|analyzing","headline":"string","detail":"string"}}}. '
+            '{"should_emit":boolean,"dimensions":{"voice_pacing":{"status":"doing_well|stable|adjust_now|analyzing","headline":"string","detail":"string","sub_dimension_id":"articulation_clarity|projection|pace|pause_placement|emphasis|intonation_or_emotional_energy|fluency","signal_polarity":"positive|neutral|negative","severity":"low|medium|high","confidence":"0-1","evidence_text":"string"},"content_expression":{"status":"doing_well|stable|adjust_now|analyzing","headline":"string","detail":"string","sub_dimension_id":"concision|filler_or_redundancy|repetition_or_circularity|structure|point_clarity|support|progression","signal_polarity":"positive|neutral|negative","severity":"low|medium|high","confidence":"0-1","evidence_text":"string"}}}. '
             "If there is no meaningful new coaching update, return should_emit=false with an empty dimensions object. "
             "Keep every headline very short, ideally within 12 Chinese characters or 24 English characters. "
             "Keep every detail to one concise sentence, ideally within 20 Chinese characters or 40 English characters. "
+            "sub_dimension_id must always be one of the listed values for that dimension. "
+            "signal_polarity should describe whether the signal is positive, neutral, or negative. "
+            "severity should reflect how urgent the issue is right now. "
+            "evidence_text should briefly name the observable evidence from the latest turn. "
             f"Example: {example}"
         )
 
@@ -540,9 +600,9 @@ class AliyunOmniCoachService:
         scenario_label = SCENARIO_LABELS.get(scenario_id, "通用演讲训练")
         language_label = LANGUAGE_LABELS.get(language, "Chinese")
         example = (
-            '{"should_emit":true,"dimensions":{"body_expression":{"status":"adjust_now","headline":"先把手离开脸","detail":"手先回到脸外。"}}}'
+            '{"should_emit":true,"dimensions":{"body_expression":{"status":"adjust_now","headline":"先把手离开脸","detail":"手先回到脸外。","sub_dimension_id":"gesture_naturalness","signal_polarity":"negative","severity":"high","confidence":0.88,"evidence_text":"手挡住了脸"}}}'
             if language == "zh"
-            else '{"should_emit":true,"dimensions":{"body_expression":{"status":"adjust_now","headline":"Move your hand away","detail":"Keep your hand off your face."}}}'
+            else '{"should_emit":true,"dimensions":{"body_expression":{"status":"adjust_now","headline":"Move your hand away","detail":"Keep your hand off your face.","sub_dimension_id":"gesture_naturalness","signal_polarity":"negative","severity":"high","confidence":0.88,"evidence_text":"hand is covering the face"}}}'
         )
         return (
             "You are the body-expression lane of Speak Up AI Live Coach. "
@@ -588,10 +648,14 @@ class AliyunOmniCoachService:
             "Do not ask follow-up questions. "
             "Do not produce multiple bullets. "
             "Return JSON only with this schema: "
-            '{"should_emit":boolean,"dimensions":{"body_expression":{"status":"doing_well|stable|adjust_now|analyzing","headline":"string","detail":"string"}}}. '
+            '{"should_emit":boolean,"dimensions":{"body_expression":{"status":"doing_well|stable|adjust_now|analyzing","headline":"string","detail":"string","sub_dimension_id":"framing|alignment|openness_or_tension|gesture_naturalness|movement_or_space_use|facial_or_eye_engagement","signal_polarity":"positive|neutral|negative","severity":"low|medium|high","confidence":"0-1","evidence_text":"string"}}}. '
             "If there is no meaningful new coaching update, return should_emit=false with an empty dimensions object. "
             "Keep every headline very short, ideally within 12 Chinese characters or 24 English characters. "
             "Keep every detail to one concise sentence, ideally within 20 Chinese characters or 40 English characters. "
+            "sub_dimension_id must always be one of the listed values. "
+            "signal_polarity should describe whether the signal is positive, neutral, or negative. "
+            "severity should reflect how urgent the issue is right now. "
+            "evidence_text should briefly name the observable evidence from the latest frames. "
             f"Example: {example}"
         )
 
@@ -601,30 +665,33 @@ class AliyunOmniCoachService:
         if connection.finish_sent:
             return
         if self.analysis_scope == "body_visual":
-            if not connection.latest_image_base64:
-                return
-            if connection.visual_request_in_flight:
-                connection.pending_visual_refresh = True
-                return
-            audio_payloads = self._collect_recent_body_audio_payloads(connection)
-            if len(audio_payloads) < self.body_audio_min_payloads:
-                return
+            async with connection.visual_refresh_lock:
+                if not connection.latest_image_base64:
+                    return
+                if not connection.latest_image_dirty:
+                    return
+                if connection.visual_request_in_flight:
+                    connection.pending_visual_refresh = True
+                    return
+                audio_payloads = self._collect_recent_body_audio_payloads(connection)
+                if len(audio_payloads) < self.body_audio_min_payloads:
+                    return
 
-            image_base64 = connection.latest_image_base64
-            connection.latest_image_base64 = None
-            connection.visual_request_in_flight = True
-            connection.pending_visual_refresh = False
-            for audio_payload in audio_payloads:
-                await self._send_json(
-                    connection,
-                    {
-                        "type": "input_audio_buffer.append",
-                        "audio": audio_payload,
-                    },
-                )
-            await self._append_image(connection, image_base64)
-            await self._send_json(connection, {"type": "input_audio_buffer.commit"})
-            await self._send_json(connection, {"type": "response.create"})
+                image_base64 = connection.latest_image_base64
+                connection.latest_image_dirty = False
+                connection.visual_request_in_flight = True
+                connection.pending_visual_refresh = False
+                for audio_payload in audio_payloads:
+                    await self._send_json(
+                        connection,
+                        {
+                            "type": "input_audio_buffer.append",
+                            "audio": audio_payload,
+                        },
+                    )
+                await self._append_image(connection, image_base64)
+                await self._send_json(connection, {"type": "input_audio_buffer.commit"})
+                await self._send_json(connection, {"type": "response.create"})
             return
         if not connection.has_received_audio:
             return

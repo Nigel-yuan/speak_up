@@ -1,6 +1,6 @@
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 ScenarioType = Literal["host", "guest-sharing", "standup"]
@@ -14,10 +14,31 @@ InsightSource = Literal["system", "omni-coach", "manual"]
 CoachDimensionId = Literal["body_expression", "voice_pacing", "content_expression"]
 CoachDisplayStatus = Literal["doing_well", "stable", "adjust_now", "analyzing"]
 CoachDimensionSource = Literal["system", "omni-coach", "speech-rule"]
+CoachSignalPolarity = Literal["positive", "neutral", "negative"]
+CoachSignalSeverity = Literal["low", "medium", "high"]
 TranscriptSpeaker = Literal["user", "coach"]
 SessionStatus = Literal["created", "streaming", "finished"]
 VoiceGender = Literal["male", "female"]
 VoiceStyle = Literal["professional", "gentle", "firm", "encouraging"]
+ReportStatus = Literal["processing", "ready", "failed"]
+ReportSectionPhase = Literal["processing", "ready"]
+ReportProgressStepPhase = Literal["pending", "active", "done", "failed"]
+ReportArtifactType = Literal[
+    "transcript_final",
+    "transcript_merged",
+    "qa_question",
+    "coach_signal",
+    "coach_panel_snapshot",
+    "session_finished",
+]
+TopDimensionId = Literal[
+    "body",
+    "facial_expression",
+    "vocal_tone",
+    "rhythm",
+    "content_quality",
+    "expression_structure",
+]
 QAPhase = Literal[
     "idle",
     "preparing_context",
@@ -101,6 +122,11 @@ class CoachDimensionState(BaseModel):
     detail: str
     updatedAtMs: int = 0
     source: CoachDimensionSource = "system"
+    subDimensionId: str | None = None
+    signalPolarity: CoachSignalPolarity | None = None
+    severity: CoachSignalSeverity | None = None
+    confidence: float | None = None
+    evidenceText: str | None = None
 
 
 class CoachPanelState(BaseModel):
@@ -115,10 +141,15 @@ class CoachPanelPatchDimension(BaseModel):
     status: CoachDisplayStatus
     headline: str
     detail: str
+    subDimensionId: str | None = None
+    signalPolarity: CoachSignalPolarity | None = None
+    severity: CoachSignalSeverity | None = None
+    confidence: float | None = None
+    evidenceText: str | None = None
 
 
 class CoachPanelPatch(BaseModel):
-    dimensions: list[CoachPanelPatchDimension] = []
+    dimensions: list[CoachPanelPatchDimension] = Field(default_factory=list)
 
 
 class SessionSetup(BaseModel):
@@ -163,14 +194,14 @@ class QAQuestion(BaseModel):
     questionText: str
     goal: str
     followUp: bool = False
-    expectedPoints: list[str] = []
+    expectedPoints: list[str] = Field(default_factory=list)
 
 
 class QAFeedback(BaseModel):
     turnId: str
     feedbackText: str
-    strengths: list[str] = []
-    missedPoints: list[str] = []
+    strengths: list[str] = Field(default_factory=list)
+    missedPoints: list[str] = Field(default_factory=list)
     nextAction: Literal["follow_up", "next_question", "end_qa"] = "next_question"
 
 
@@ -196,17 +227,119 @@ class HistoricalSessionSummary(BaseModel):
     scenarioId: ScenarioType
     overallScore: int
     summary: str
-    deltas: list[MetricDelta]
+    deltas: list[MetricDelta] = Field(default_factory=list)
+
+class ReportEvidenceRef(BaseModel):
+    timestampMs: int = 0
+    quote: str | None = None
+    dimensionId: TopDimensionId
+    subDimensionId: str | None = None
+
+
+class ReportSubDimensionScore(BaseModel):
+    id: str
+    label: str
+    score: int
+    reason: str
+
+
+class ReportTopDimensionScore(BaseModel):
+    id: TopDimensionId
+    label: str
+    score: int
+    weight: int = 0
+    strengths: list[str] = Field(default_factory=list)
+    weaknesses: list[str] = Field(default_factory=list)
+    subDimensions: list[ReportSubDimensionScore] = Field(default_factory=list)
+    evidenceRefs: list[ReportEvidenceRef] = Field(default_factory=list)
+
+
+class ReportArtifactEntry(BaseModel):
+    sessionId: str
+    type: ReportArtifactType
+    timestampMs: int
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReportWindowPack(BaseModel):
+    sessionId: str
+    windowId: str
+    windowStartMs: int
+    windowEndMs: int
+    topDimensionScores: list[ReportTopDimensionScore] = Field(default_factory=list)
+    candidateSuggestions: list[SuggestionItem] = Field(default_factory=list)
+    evidenceRefs: list[ReportEvidenceRef] = Field(default_factory=list)
+    confidence: float | None = None
+    createdAt: str
+
+
+class ReportProgressStep(BaseModel):
+    key: str
+    label: str
+    status: ReportProgressStepPhase = "pending"
+    detail: str | None = None
+
+
+class ReportProgressState(BaseModel):
+    currentKey: str = "collecting"
+    currentLabel: str = "等待开始"
+    detail: str | None = None
+    steps: list[ReportProgressStep] = Field(
+        default_factory=lambda: [
+            ReportProgressStep(key="collecting", label="收集本轮素材"),
+            ReportProgressStep(key="structuring", label="整理问答与教练信号"),
+            ReportProgressStep(key="generating", label="生成整场分析报告"),
+            ReportProgressStep(key="finalizing", label="写入最终结果"),
+        ]
+    )
+
+
+class ReportRepositoryState(BaseModel):
+    sessionId: str
+    scenarioId: ScenarioType
+    language: LanguageOption
+    lastCoveredMs: int = 0
+    windowCount: int = 0
+    status: ReportStatus = "processing"
+    latestArtifactMs: int = 0
+    finalGeneratedAt: str | None = None
+    finalCoveredMs: int = 0
+    errorMessage: str | None = None
+    progress: ReportProgressState = Field(default_factory=ReportProgressState)
+
+
+class ReportSectionStatus(BaseModel):
+    summary: ReportSectionPhase = "ready"
+    radar: ReportSectionPhase = "ready"
+    suggestions: ReportSectionPhase = "ready"
 
 
 class SessionReport(BaseModel):
-    overallScore: int
-    headline: str
-    encouragement: str
-    highlights: list[str]
-    suggestions: list[SuggestionItem]
-    radarMetrics: list[RadarMetric]
-    comparisonSummary: str
+    sessionId: str
+    status: ReportStatus = "ready"
+    overallScore: int = 0
+    headline: str = ""
+    encouragement: str = ""
+    summaryParagraph: str = ""
+    highlights: list[str] = Field(default_factory=list)
+    suggestions: list[SuggestionItem] = Field(default_factory=list)
+    radarMetrics: list[RadarMetric] = Field(default_factory=list)
+    dimensions: list[ReportTopDimensionScore] = Field(default_factory=list)
+    generatedAt: str = ""
+    sectionStatus: ReportSectionStatus = Field(default_factory=ReportSectionStatus)
+    progress: ReportProgressState = Field(default_factory=ReportProgressState)
+
+
+class ReportReassuranceAudioResponse(BaseModel):
+    text: str
+    audioUrl: str
+    durationMs: int
+    voiceProfileId: str
+
+
+class ReportReassuranceAudioRequest(BaseModel):
+    attemptIndex: int = 0
+    voiceProfileId: str | None = None
 
 
 class SessionStreamFrame(BaseModel):

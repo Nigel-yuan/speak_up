@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -14,6 +14,8 @@ from app.schemas import (
     LanguageOption,
     RealtimeSession,
     RealtimeSessionResponse,
+    ReportReassuranceAudioRequest,
+    ReportReassuranceAudioResponse,
     VoiceProfile,
     ScenarioOption,
     ScenarioType,
@@ -152,8 +154,13 @@ def get_report(
 
 
 @app.post("/api/session/start", response_model=RealtimeSessionResponse)
-def start_session(payload: StartSessionRequest) -> RealtimeSessionResponse:
+async def start_session(payload: StartSessionRequest) -> RealtimeSessionResponse:
     session = session_manager.create_session(payload.scenarioId, payload.language)
+    await session_manager.report_job_service.register_session(
+        session_id=session.session_id,
+        scenario_id=payload.scenarioId,
+        language=payload.language,
+    )
     return RealtimeSessionResponse(
         **session.to_schema().model_dump(),
         websocketUrl=f"ws://127.0.0.1:8000/ws/session/{session.session_id}",
@@ -174,6 +181,82 @@ async def finish_session(session_id: str) -> RealtimeSession:
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
     return session.to_schema()
+
+
+@app.get("/api/session/{session_id}/report", response_model=SessionReport)
+async def get_session_report(session_id: str) -> SessionReport:
+    report = await session_manager.report_job_service.get_report(session_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return report
+
+
+@app.post("/api/session/{session_id}/report/generate", response_model=SessionReport)
+async def generate_session_report(session_id: str) -> SessionReport:
+    try:
+        report = await session_manager.report_job_service.trigger_final_report(session_id)
+        if report is None:
+            raise FileNotFoundError(session_id)
+        return report
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="Session not found") from error
+    except Exception as error:
+        logging.getLogger("speak_up.session").exception(
+            "report.generate.failed session=%s error=%s",
+            session_id,
+            error,
+        )
+        raise HTTPException(status_code=500, detail="报告生成失败") from error
+
+
+@app.post("/api/session/{session_id}/report/reassurance-audio", response_model=ReportReassuranceAudioResponse)
+async def generate_report_reassurance_audio(
+    session_id: str,
+    payload: ReportReassuranceAudioRequest = Body(default_factory=ReportReassuranceAudioRequest),
+) -> ReportReassuranceAudioResponse:
+    try:
+        audio = await session_manager.report_job_service.generate_reassurance_audio(
+            session_id,
+            attempt_index=payload.attemptIndex,
+            voice_profile_id=payload.voiceProfileId,
+        )
+        if audio is None:
+            raise FileNotFoundError(session_id)
+        return audio
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="Session not found") from error
+    except Exception as error:
+        logging.getLogger("speak_up.session").exception(
+            "report.reassurance_audio.failed session=%s error=%s",
+            session_id,
+            error,
+        )
+        raise HTTPException(status_code=503, detail="安抚语音生成失败") from error
+
+
+@app.get("/api/session/{session_id}/report/windows")
+async def list_session_report_windows(session_id: str) -> list[dict]:
+    try:
+        packs = await session_manager.report_job_service.list_window_packs(session_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="Session not found") from error
+    return [pack.model_dump() for pack in packs]
+
+
+@app.get("/api/session/{session_id}/report/artifacts")
+async def list_session_report_artifacts(session_id: str) -> list[dict]:
+    try:
+        return await session_manager.report_job_service.list_artifacts(session_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="Session not found") from error
+
+
+@app.get("/api/session/{session_id}/report/signals")
+async def get_session_report_signals(session_id: str) -> dict:
+    payload = await session_manager.report_job_service.get_signals(session_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return payload
 
 
 @app.get("/api/session/{session_id}/replay", response_model=SessionReplay)

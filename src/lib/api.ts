@@ -18,6 +18,16 @@ import type {
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 
+export function resolveApiUrl(url: string | null | undefined) {
+  if (!url) {
+    return "";
+  }
+  if (url.startsWith("http://") || url.startsWith("https://")) {
+    return url;
+  }
+  return `${API_BASE_URL}${url}`;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
 
@@ -117,6 +127,39 @@ export function getSessionStream(scenario: ScenarioType, language: LanguageOptio
 
 export function getReport(scenario: ScenarioType) {
   return request<SessionReport>(`/api/report?scenario=${scenario}`);
+}
+
+export function getSessionReport(sessionId: string) {
+  return request<SessionReport>(`/api/session/${sessionId}/report`);
+}
+
+export function triggerSessionReportGeneration(sessionId: string) {
+  return request<SessionReport>(`/api/session/${sessionId}/report/generate`, {
+    method: "POST",
+  });
+}
+
+export interface ReportReassuranceAudio {
+  text: string;
+  audioUrl: string;
+  durationMs: number;
+  voiceProfileId: string;
+}
+
+export function triggerReportReassuranceAudio(
+  sessionId: string,
+  options?: {
+    attemptIndex?: number;
+    voiceProfileId?: string | null;
+  },
+) {
+  return request<ReportReassuranceAudio>(`/api/session/${sessionId}/report/reassurance-audio`, {
+    method: "POST",
+    body: JSON.stringify({
+      attemptIndex: options?.attemptIndex ?? 0,
+      voiceProfileId: options?.voiceProfileId ?? null,
+    }),
+  });
 }
 
 export function getSessionReplay(sessionId: string) {

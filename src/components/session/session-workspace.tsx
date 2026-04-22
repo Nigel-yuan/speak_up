@@ -10,6 +10,7 @@ import { SessionStage } from "@/components/session/session-stage";
 import { SessionToolbar } from "@/components/session/session-toolbar";
 import { SessionControls } from "@/components/session/session-controls";
 import { useSessionResult } from "@/components/session/session-provider";
+import { primeAudioPlayback } from "@/lib/audio-playback";
 import { TranscriptPanel } from "@/components/session/transcript-panel";
 import { useMockSession } from "@/hooks/useMockSession";
 import { extractDocumentText, getQAVoiceProfiles, getScenarios } from "@/lib/api";
@@ -70,6 +71,10 @@ export function SessionWorkspace({
   const [selectedScenarioId, setSelectedScenarioId] = useState<ScenarioType>(defaultScenario);
   const documentInputRef = useRef<HTMLInputElement | null>(null);
   const currentDocumentUrlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    router.prefetch("/report");
+  }, [router]);
 
   useEffect(() => {
     let active = true;
@@ -353,16 +358,18 @@ export function SessionWorkspace({
     }
   };
 
-  const finishSession = async () => {
-    try {
-      const finishedSessionId = sessionId;
-      const { active, committed } = flushTranscript();
-      await finish();
-      await saveResult({ scenarioId, language }, active ? [...committed, active] : committed, finishedSessionId);
-      router.push("/report");
-    } catch {
-      return;
-    }
+  const finishSession = () => {
+    const finishedSessionId = sessionId;
+    const { active, committed } = flushTranscript();
+    const nextTranscript = active ? [...committed, active] : committed;
+
+    primeAudioPlayback();
+    void saveResult({ scenarioId, language }, nextTranscript, finishedSessionId).catch(() => undefined);
+    router.push("/report");
+
+    window.setTimeout(() => {
+      void finish().catch(() => undefined);
+    }, 0);
   };
 
   const activeVoiceProfileId = qaState.voiceProfileId ?? selectedVoiceProfileId;

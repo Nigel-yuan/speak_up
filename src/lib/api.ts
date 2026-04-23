@@ -15,17 +15,10 @@ import type {
   TranscriptChunk,
   VoiceProfile,
 } from "@/types/session";
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
+import { getApiBaseUrlCandidates, resolveApiUrlWithBase } from "@/lib/api-base";
 
 export function resolveApiUrl(url: string | null | undefined) {
-  if (!url) {
-    return "";
-  }
-  if (url.startsWith("http://") || url.startsWith("https://")) {
-    return url;
-  }
-  return `${API_BASE_URL}${url}`;
+  return resolveApiUrlWithBase(url);
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -35,16 +28,28 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
 
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE_URL}${path}`, {
-      cache: "no-store",
-      ...init,
-      headers,
-    });
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : "unknown network error";
-    throw new Error(`无法连接后端服务，请确认 API 正在运行且 CORS 配置正确：${detail}`);
+  let response: Response | null = null;
+  let lastError: unknown = null;
+  const baseUrls = getApiBaseUrlCandidates();
+
+  for (const baseUrl of baseUrls) {
+    try {
+      response = await fetch(resolveApiUrlWithBase(path, baseUrl), {
+        cache: "no-store",
+        ...init,
+        headers,
+      });
+      break;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (!response) {
+    const detail = lastError instanceof Error ? lastError.message : "unknown network error";
+    throw new Error(
+      `无法连接后端服务，已尝试：${baseUrls.join("、")}。请确认 API 正在运行：${detail}`,
+    );
   }
 
   if (!response.ok) {
@@ -139,31 +144,24 @@ export function triggerSessionReportGeneration(sessionId: string) {
   });
 }
 
-export interface ReportReassuranceAudio {
-  text: string;
-  audioUrl: string;
-  durationMs: number;
-  voiceProfileId: string;
-}
-
-export function triggerReportReassuranceAudio(
-  sessionId: string,
-  options?: {
-    attemptIndex?: number;
-    voiceProfileId?: string | null;
-  },
-) {
-  return request<ReportReassuranceAudio>(`/api/session/${sessionId}/report/reassurance-audio`, {
-    method: "POST",
-    body: JSON.stringify({
-      attemptIndex: options?.attemptIndex ?? 0,
-      voiceProfileId: options?.voiceProfileId ?? null,
-    }),
-  });
-}
-
 export function getSessionReplay(sessionId: string) {
   return request<SessionReplay>(`/api/session/${sessionId}/replay`);
+}
+
+export interface ReplayMediaUploadResult {
+  mediaUrl: string;
+  mediaType: "audio" | "video";
+  durationMs: number;
+}
+
+export function uploadSessionReplayMedia(sessionId: string, file: File, durationMs: number) {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("duration_ms", String(Math.max(0, Math.round(durationMs))));
+  return request<ReplayMediaUploadResult>(`/api/session/${sessionId}/replay/media`, {
+    method: "POST",
+    body: formData,
+  });
 }
 
 export function startRealtimeSession(

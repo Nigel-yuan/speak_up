@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import Body, FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -14,8 +14,7 @@ from app.schemas import (
     LanguageOption,
     RealtimeSession,
     RealtimeSessionResponse,
-    ReportReassuranceAudioRequest,
-    ReportReassuranceAudioResponse,
+    ReplayMediaUploadResponse,
     VoiceProfile,
     ScenarioOption,
     ScenarioType,
@@ -154,16 +153,18 @@ def get_report(
 
 
 @app.post("/api/session/start", response_model=RealtimeSessionResponse)
-async def start_session(payload: StartSessionRequest) -> RealtimeSessionResponse:
+async def start_session(payload: StartSessionRequest, request: Request) -> RealtimeSessionResponse:
     session = session_manager.create_session(payload.scenarioId, payload.language)
     await session_manager.report_job_service.register_session(
         session_id=session.session_id,
         scenario_id=payload.scenarioId,
         language=payload.language,
     )
+    websocket_scheme = "wss" if request.url.scheme == "https" else "ws"
+    websocket_url = f"{websocket_scheme}://{request.headers.get('host', '127.0.0.1:8000')}/ws/session/{session.session_id}"
     return RealtimeSessionResponse(
         **session.to_schema().model_dump(),
-        websocketUrl=f"ws://127.0.0.1:8000/ws/session/{session.session_id}",
+        websocketUrl=websocket_url,
     )
 
 
@@ -209,31 +210,6 @@ async def generate_session_report(session_id: str) -> SessionReport:
         raise HTTPException(status_code=500, detail="报告生成失败") from error
 
 
-@app.post("/api/session/{session_id}/report/reassurance-audio", response_model=ReportReassuranceAudioResponse)
-async def generate_report_reassurance_audio(
-    session_id: str,
-    payload: ReportReassuranceAudioRequest = Body(default_factory=ReportReassuranceAudioRequest),
-) -> ReportReassuranceAudioResponse:
-    try:
-        audio = await session_manager.report_job_service.generate_reassurance_audio(
-            session_id,
-            attempt_index=payload.attemptIndex,
-            voice_profile_id=payload.voiceProfileId,
-        )
-        if audio is None:
-            raise FileNotFoundError(session_id)
-        return audio
-    except FileNotFoundError as error:
-        raise HTTPException(status_code=404, detail="Session not found") from error
-    except Exception as error:
-        logging.getLogger("speak_up.session").exception(
-            "report.reassurance_audio.failed session=%s error=%s",
-            session_id,
-            error,
-        )
-        raise HTTPException(status_code=503, detail="安抚语音生成失败") from error
-
-
 @app.get("/api/session/{session_id}/report/windows")
 async def list_session_report_windows(session_id: str) -> list[dict]:
     try:
@@ -260,11 +236,44 @@ async def get_session_report_signals(session_id: str) -> dict:
 
 
 @app.get("/api/session/{session_id}/replay", response_model=SessionReplay)
-def get_session_replay(session_id: str) -> SessionReplay:
-    replay = session_manager.get_replay(session_id)
+async def get_session_replay(session_id: str) -> SessionReplay:
+    replay = await session_manager.replay_service.build_replay(session_id)
     if replay is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    return SessionReplay.model_validate(replay)
+    return replay
+
+
+@app.post("/api/session/{session_id}/replay/media", response_model=ReplayMediaUploadResponse)
+async def upload_session_replay_media(
+    session_id: str,
+    file: UploadFile = File(...),
+    duration_ms: int = Form(default=0),
+) -> ReplayMediaUploadResponse:
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Replay media file is empty")
+    try:
+        return await session_manager.replay_service.save_media(
+            session_id,
+            filename=file.filename,
+            content_type=file.content_type,
+            data=data,
+            duration_ms=duration_ms,
+        )
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="Session not found") from error
+
+
+@app.get("/api/session/{session_id}/replay/media")
+async def get_session_replay_media(session_id: str) -> FileResponse:
+    media = await session_manager.replay_service.get_media_file(session_id)
+    if media is None:
+        raise HTTPException(status_code=404, detail="Replay media not found")
+    return FileResponse(
+        path=media.path,
+        media_type=media.content_type or "application/octet-stream",
+        filename=media.path.name,
+    )
 
 
 @app.get("/api/session/{session_id}/qa/turns/{turn_id}/audio")

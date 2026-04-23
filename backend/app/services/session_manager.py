@@ -38,6 +38,7 @@ from app.services.omni_service import (
     is_omni_internal_service_error,
 )
 from app.services.qa_mode_orchestrator import QAModeOrchestrator
+from app.services.replay_service import ReplayService
 from app.services.report_job_service import ReportJobService
 from app.services.speech_analysis_service import SpeechAnalysisService
 from app.services.stt_service import ProviderTranscriptResult, build_stt_service
@@ -153,6 +154,11 @@ class SessionManager:
         self.coach_panel_service = CoachPanelService()
         self.qa_mode_orchestrator = QAModeOrchestrator()
         self.report_job_service = ReportJobService()
+        self.replay_service = ReplayService(
+            artifact_service=self.report_job_service.artifact_service,
+            repository=self.report_job_service.repository,
+            signal_service=self.report_job_service.signal_service,
+        )
 
     def create_session(self, scenario_id: ScenarioType, language: LanguageOption) -> SessionRecord:
         session_id = uuid4().hex
@@ -203,20 +209,6 @@ class SessionManager:
         self.qa_mode_orchestrator.close_session(session_id)
         await self.broadcast_status(session)
         return session
-
-    def get_replay(self, session_id: str) -> dict | None:
-        session = self.sessions.get(session_id)
-        if session is None:
-            return None
-
-        return {
-            "sessionId": session.session_id,
-            "scenarioId": session.scenario_id,
-            "language": session.language,
-            "mediaUrl": None,
-            "mediaType": None,
-            "transcript": [chunk.model_dump() for chunk in session.transcript_chunks],
-        }
 
     async def connect(self, session: SessionRecord, websocket: WebSocket) -> None:
         await websocket.accept()

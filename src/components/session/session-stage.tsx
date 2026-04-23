@@ -20,6 +20,7 @@ interface SessionStageProps {
   qaEnabled: boolean;
   question: QAQuestion | null;
   registerVideoFrameProvider: (capture: () => string | null) => void;
+  onCameraStreamReady?: (stream: MediaStream | null) => void;
   sessionId: string | null;
   speaking: boolean;
   statusMessage: string | null;
@@ -45,6 +46,7 @@ export function SessionStage({
   qaEnabled,
   question,
   registerVideoFrameProvider,
+  onCameraStreamReady,
   sessionId,
   speaking,
   statusMessage,
@@ -64,6 +66,7 @@ export function SessionStage({
           isRunning={isRunning}
           onDocumentPick={onDocumentPick}
           onFrameCaptureReady={registerVideoFrameProvider}
+          onStreamReady={onCameraStreamReady}
           sessionId={sessionId}
           statusMessage={statusMessage}
         >
@@ -77,6 +80,7 @@ export function SessionStage({
         elapsedSeconds={elapsedSeconds}
         isRunning={isRunning}
         onFrameCaptureReady={registerVideoFrameProvider}
+        onStreamReady={onCameraStreamReady}
       >
         <div className="space-y-2">
           {statusMessage ? (
@@ -105,6 +109,7 @@ export function SessionStage({
             elapsedSeconds={elapsedSeconds}
             isRunning={isRunning}
             onFrameCaptureReady={registerVideoFrameProvider}
+            onStreamReady={onCameraStreamReady}
           >
             <div className="space-y-2">
               {statusMessage ? (
@@ -143,6 +148,7 @@ export function SessionStage({
                 elapsedSeconds={elapsedSeconds}
                 isRunning={isRunning}
                 onFrameCaptureReady={registerVideoFrameProvider}
+                onStreamReady={onCameraStreamReady}
                 variant="inset"
               >
                 <div />

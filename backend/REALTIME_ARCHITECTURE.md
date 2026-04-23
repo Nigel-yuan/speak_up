@@ -10,9 +10,8 @@
 - `qwen3-asr-flash-realtime` 实时转写
 - `AI Live Coach` 三维 `coach_panel`
 - QA interviewer 实时语音问答
-- transcript timeline 回放
+- 训练回放：真实媒体 + transcript + AI Live Coach 时间线
 - 基于真实 `sessionId` 的报告生成
-- 报告等待态安抚语音
 
 ## 2. 总体结构
 
@@ -46,6 +45,7 @@ flowchart LR
 
 - 浏览器截图而不是原始视频流推送
 - 低频 JPEG 帧送给 Omni 视觉链路
+- 训练结束时，浏览器会用 `MediaRecorder` 把摄像头视频轨和麦克风音轨录成 replay 媒体文件并上传后端
 
 ### 训练模式
 
@@ -134,46 +134,53 @@ QA prewarm 是后台 sidecar：
 
 当前报告数据已经落盘到 `output/report_data/<session_id>/`，不是纯内存态。
 
-## 8. 安抚语音
+## 8. Replay
 
-报告页进入 processing 后，会并行触发安抚语音：
-
-- `POST /api/session/{session_id}/report/reassurance-audio`
-
-规则：
-
-- 立即允许安抚
-- 报告 ready 后淡出停止
-- 最多播 3 次，不无限循环
-
-## 9. Replay
-
-当前 replay 主要保证 transcript timeline 可用：
+当前 replay 已经接入真实媒体回放：
 
 - `GET /api/session/{session_id}/replay`
+- `POST /api/session/{session_id}/replay/media`
+- `GET /api/session/{session_id}/replay/media`
 
-`mediaUrl / mediaType` 仍然为空，真实媒体回放还没接。
+返回内容包括：
 
-## 10. 当前工程边界
+- `mediaUrl / mediaType / durationMs`
+- `transcript`
+- `coachInsights`
+
+当前前端页面是：
+
+- 左侧媒体播放器
+- 右侧 transcript + AI Live Coach 统一时间线
+
+时间同步规则是：
+
+- 媒体播放驱动当前时间
+- 当前时间驱动右侧高亮
+- 点击右侧条目反向 seek 媒体
+
+## 9. 当前工程边界
 
 - 实时链路和报告链路都跑在同一个后端进程里
 - 报告存储是本地文件，不是数据库
 - QA prewarm 是软旁路，不是独立 worker
-- 真实媒体回放仍未接入
+- replay 媒体存储仍是本地文件，不做服务端转码
 
-### 1. ASR 和 Live Coach 分离
+## 10. 当前设计约束
+
+### 10.1 ASR 和 Live Coach 分离
 
 - 字幕链路只负责转写
 - Live Coach 只负责 coach panel
 
 不要让一条链路同时承担两种职责。
 
-### 2. body_expression 和 voice/content 分离
+### 10.2 body_expression 和 voice/content 分离
 
 - `body_expression` 需要独立视觉触发
 - `voice/content` 用 partial 字幕先做轻量预览，再由 final 字幕和 Omni VAD 结果修正
 
-### 3. 文档模式先做展示，再做理解
+### 10.3 文档模式先做展示，再做理解
 
 当前仓库已经按这个边界实现：
 

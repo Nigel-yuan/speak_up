@@ -10,6 +10,7 @@ interface CameraPanelProps {
   isRunning: boolean;
   elapsedSeconds: number;
   onFrameCaptureReady?: (capture: () => string | null) => void;
+  onStreamReady?: (stream: MediaStream | null) => void;
   variant?: "stage" | "inset";
 }
 
@@ -51,15 +52,21 @@ export function CameraPanel({
   isRunning,
   elapsedSeconds,
   onFrameCaptureReady,
+  onStreamReady,
   variant = "stage",
 }: CameraPanelProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const streamReadyCallbackRef = useRef(onStreamReady);
   const [permissionState, setPermissionState] = useState<"idle" | "granted" | "denied">("idle");
 
   const handleVideoRef = useCallback((node: HTMLVideoElement | null) => {
     videoRef.current = node;
   }, []);
+
+  useEffect(() => {
+    streamReadyCallbackRef.current = onStreamReady;
+  }, [onStreamReady]);
 
   useEffect(() => {
     let stream: MediaStream | null = null;
@@ -74,14 +81,17 @@ export function CameraPanel({
           });
         }
         setPermissionState("granted");
+        streamReadyCallbackRef.current?.(stream);
       } catch {
         setPermissionState("denied");
+        streamReadyCallbackRef.current?.(null);
       }
     }
 
     enableCamera();
 
     return () => {
+      streamReadyCallbackRef.current?.(null);
       stream?.getTracks().forEach((track) => track.stop());
     };
   }, []);

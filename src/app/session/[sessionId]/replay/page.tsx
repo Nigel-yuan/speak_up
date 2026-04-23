@@ -3,72 +3,125 @@
 import Link from "next/link";
 import { use, useEffect, useMemo, useRef, useState } from "react";
 
-import { getSessionReplay } from "@/lib/api";
-import type { SessionReplay, TranscriptChunk } from "@/types/session";
 import { Card } from "@/components/ui/card";
+import { getSessionReplay, resolveApiUrl } from "@/lib/api";
+import type { ReplayCoachInsight, SessionReplay, TranscriptChunk } from "@/types/session";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
+type ReplayTimelineItem =
+  | {
+      id: string;
+      type: "transcript";
+      startMs: number;
+      endMs: number;
+      payload: TranscriptChunk;
+    }
+  | {
+      id: string;
+      type: "coach";
+      startMs: number;
+      endMs: number;
+      payload: ReplayCoachInsight;
+    };
 
 function resolveMediaUrl(mediaUrl: string | null) {
   if (!mediaUrl) {
     return null;
   }
+  return resolveApiUrl(mediaUrl);
+}
 
-  if (mediaUrl.startsWith("http")) {
-    return mediaUrl;
+function formatClock(ms: number) {
+  const totalSeconds = Math.max(Math.floor(ms / 1000), 0);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+}
+
+function clampMs(value: number, max: number) {
+  return Math.max(0, Math.min(value, max));
+}
+
+function buildTimelineItems(replay: SessionReplay | null) {
+  if (!replay) {
+    return [] as ReplayTimelineItem[];
   }
 
-  return `${API_BASE_URL}${mediaUrl}`;
+  const transcriptItems: ReplayTimelineItem[] = replay.transcript.map((item) => ({
+    id: item.id,
+    type: "transcript",
+    startMs: item.startMs,
+    endMs: Math.max(item.endMs, item.startMs + 500),
+    payload: item,
+  }));
+  const coachItems: ReplayTimelineItem[] = replay.coachInsights.map((item) => ({
+    id: item.id,
+    type: "coach",
+    startMs: item.startMs,
+    endMs: Math.max(item.endMs, item.startMs + 1200),
+    payload: item,
+  }));
+
+  return [...transcriptItems, ...coachItems].sort((left, right) => {
+    if (left.startMs !== right.startMs) {
+      return left.startMs - right.startMs;
+    }
+    if (left.type === right.type) {
+      return left.id.localeCompare(right.id);
+    }
+    return left.type === "transcript" ? -1 : 1;
+  });
 }
 
-function findActiveTranscript(transcript: TranscriptChunk[], currentTime: number) {
-  const currentMs = currentTime * 1000;
-  return transcript.find((item) => currentMs >= item.startMs && currentMs <= item.endMs)?.id ?? transcript.at(-1)?.id ?? null;
+function findActiveItemId(items: ReplayTimelineItem[], currentTimeMs: number) {
+  let activeId: string | null = null;
+
+  for (const item of items) {
+    if (currentTimeMs >= item.startMs && currentTimeMs <= item.endMs) {
+      activeId = item.id;
+    }
+    if (item.startMs > currentTimeMs) {
+      break;
+    }
+  }
+
+  if (activeId) {
+    return activeId;
+  }
+
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (items[index]!.startMs <= currentTimeMs) {
+      return items[index]!.id;
+    }
+  }
+
+  return items[0]?.id ?? null;
 }
 
-function buildDemoReplay(sessionId: string): SessionReplay {
-  return {
-    sessionId,
-    scenarioId: "host",
-    language: "zh",
-    mediaUrl: null,
-    mediaType: null,
-    transcript: [
-      {
-        id: "demo-1",
-        speaker: "user",
-        text: "大家好，今天我想用三分钟介绍一下这个项目目前的进展。",
-        timestampLabel: "00:03",
-        startMs: 3000,
-        endMs: 7000,
-      },
-      {
-        id: "demo-2",
-        speaker: "user",
-        text: "先讲结果，再讲过程，最后我会说明接下来的风险和计划。",
-        timestampLabel: "00:09",
-        startMs: 9000,
-        endMs: 14000,
-      },
-      {
-        id: "demo-3",
-        speaker: "user",
-        text: "如果从听感上优化，我觉得开头可以更直接，停顿也可以更稳定。",
-        timestampLabel: "00:16",
-        startMs: 16000,
-        endMs: 22000,
-      },
-    ],
-  };
+function getCoachToneClasses(insight: ReplayCoachInsight, active: boolean) {
+  if (active) {
+    return "border-violet-500 bg-violet-600 text-white shadow-[0_18px_40px_rgba(109,40,217,0.22)]";
+  }
+  if (insight.polarity === "positive") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-950";
+  }
+  if (insight.polarity === "negative") {
+    return "border-amber-200 bg-amber-50 text-amber-950";
+  }
+  return "border-slate-200 bg-slate-50 text-slate-900";
+}
+
+function buildReportHref(sessionId: string, replay: SessionReplay) {
+  return `/report?sessionId=${sessionId}&scenario=${replay.scenarioId}&language=${replay.language}`;
 }
 
 export default function SessionReplayPage({ params }: { params: Promise<{ sessionId: string }> }) {
   const { sessionId } = use(params);
   const mediaRef = useRef<HTMLAudioElement | HTMLVideoElement | null>(null);
+  const timelineItemRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const [replay, setReplay] = useState<SessionReplay | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [currentTime, setCurrentTime] = useState(0);
+  const [currentTimeMs, setCurrentTimeMs] = useState(0);
 
   useEffect(() => {
     let active = true;
@@ -82,13 +135,13 @@ export default function SessionReplayPage({ params }: { params: Promise<{ sessio
         setReplay(nextReplay);
         setError(null);
       })
-      .catch(() => {
+      .catch((loadError) => {
         if (!active) {
           return;
         }
 
-        setReplay(buildDemoReplay(sessionId));
-        setError(null);
+        setReplay(null);
+        setError(loadError instanceof Error ? loadError.message : "回放不存在");
       })
       .finally(() => {
         if (active) {
@@ -102,26 +155,41 @@ export default function SessionReplayPage({ params }: { params: Promise<{ sessio
   }, [sessionId]);
 
   const mediaUrl = useMemo(() => resolveMediaUrl(replay?.mediaUrl ?? null), [replay?.mediaUrl]);
-  const orderedTranscript = useMemo(() => [...(replay?.transcript ?? [])].reverse(), [replay?.transcript]);
-  const activeTranscriptId = useMemo(
-    () => findActiveTranscript(replay?.transcript ?? [], currentTime),
-    [currentTime, replay?.transcript],
+  const timelineItems = useMemo(() => buildTimelineItems(replay), [replay]);
+  const durationMs = useMemo(
+    () => Math.max(replay?.durationMs ?? 0, timelineItems[timelineItems.length - 1]?.endMs ?? 0),
+    [replay?.durationMs, timelineItems],
+  );
+  const activeTimelineId = useMemo(
+    () => findActiveItemId(timelineItems, currentTimeMs),
+    [currentTimeMs, timelineItems],
   );
 
-  const seekToTranscript = (item: TranscriptChunk) => {
-    const media = mediaRef.current;
-    if (!media) {
+  useEffect(() => {
+    if (!activeTimelineId) {
       return;
     }
 
-    media.currentTime = item.startMs / 1000;
-    setCurrentTime(media.currentTime);
+    timelineItemRefs.current[activeTimelineId]?.scrollIntoView({
+      block: "nearest",
+      behavior: "smooth",
+    });
+  }, [activeTimelineId]);
+
+  const seekTo = (nextTimeMs: number) => {
+    const clampedTimeMs = clampMs(nextTimeMs, durationMs);
+    const media = mediaRef.current;
+
+    if (media) {
+      media.currentTime = clampedTimeMs / 1000;
+    }
+    setCurrentTimeMs(clampedTimeMs);
   };
 
   if (loading) {
     return (
       <main className="mx-auto flex min-h-screen w-full max-w-7xl items-center justify-center px-6 py-10 md:px-10">
-        <Card className="px-6 py-5 text-base font-medium text-slate-600">回放加载中...</Card>
+        <Card className="px-6 py-5 text-base font-medium text-slate-600">回放复盘加载中...</Card>
       </main>
     );
   }
@@ -129,25 +197,27 @@ export default function SessionReplayPage({ params }: { params: Promise<{ sessio
   if (error || !replay) {
     return (
       <main className="mx-auto min-h-screen w-full max-w-7xl px-6 py-10 md:px-10">
-        <Link href="/report" className="text-sm font-semibold text-slate-500">
-          ← 返回报告
+        <Link href="/" className="text-sm font-semibold text-slate-500">
+          ← 返回首页
         </Link>
         <Card className="mt-8 p-6 text-base font-medium text-slate-600">{error ?? "回放不存在"}</Card>
       </main>
     );
   }
 
+  const reportHref = buildReportHref(sessionId, replay);
+
   return (
-    <main className="mx-auto min-h-screen w-full max-w-7xl px-6 py-10 md:px-10">
+    <main className="mx-auto min-h-screen w-full max-w-[1800px] px-4 py-6 md:px-8 xl:px-10">
       <div className="mb-8 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
-          <Link href="/report" className="text-sm font-semibold text-slate-500">
+          <Link href={reportHref} className="text-sm font-semibold text-slate-500">
             ← 返回报告
           </Link>
-          <p className="mt-3 text-sm font-semibold text-violet-600">Session Replay</p>
-          <h1 className="mt-2 text-3xl font-semibold text-slate-950">回看本次练习</h1>
-          <p className="mt-2 text-sm text-slate-500">
-            {replay.language === "zh" ? "中文" : "English"} · {replay.scenarioId}
+          <p className="mt-3 text-sm font-semibold text-violet-600">回放复盘</p>
+          <h1 className="mt-2 text-3xl font-semibold text-slate-950 xl:text-[2.35rem]">按时间轴回看这次练习</h1>
+          <p className="mt-2 max-w-3xl text-sm leading-7 text-slate-500">
+            {replay.language === "zh" ? "中文" : "English"} · {replay.scenarioId} · {timelineItems.length} 个时间点
           </p>
         </div>
         <Link
@@ -158,11 +228,16 @@ export default function SessionReplayPage({ params }: { params: Promise<{ sessio
         </Link>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.1fr)_420px]">
-        <Card className="overflow-hidden bg-slate-950 p-6 text-white">
-          <div className="mb-5">
-            <p className="text-sm text-slate-300">媒体回放</p>
-            <h2 className="mt-1 text-2xl font-semibold">先音频回放，后续升级视频</h2>
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.55fr)_minmax(500px,0.9fr)] 2xl:grid-cols-[minmax(0,1.7fr)_620px]">
+        <Card className="overflow-hidden border-slate-200 bg-white p-7 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
+          <div className="mb-5 flex items-center justify-between gap-4">
+            <div>
+              <p className="text-sm text-slate-500">媒体回放</p>
+              <h2 className="mt-1 text-2xl font-semibold text-slate-950 xl:text-[2rem]">左侧视频，右侧同步复盘</h2>
+            </div>
+            <div className="rounded-full bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">
+              当前时间 {formatClock(currentTimeMs)}
+            </div>
           </div>
 
           {mediaUrl ? (
@@ -170,19 +245,17 @@ export default function SessionReplayPage({ params }: { params: Promise<{ sessio
               <video
                 ref={mediaRef as React.RefObject<HTMLVideoElement>}
                 controls
-                className="aspect-video w-full rounded-3xl bg-black"
+                playsInline
+                className="h-[min(72vh,860px)] w-full rounded-[32px] object-cover object-center shadow-[0_18px_50px_rgba(15,23,42,0.16)]"
                 src={mediaUrl}
-                onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+                onTimeUpdate={(event) => setCurrentTimeMs(Math.round(event.currentTarget.currentTime * 1000))}
               />
             ) : (
-              <div className="rounded-3xl bg-white/8 p-6">
-                <div className="mb-8 flex aspect-video items-center justify-center rounded-3xl bg-gradient-to-br from-violet-500/30 to-slate-800">
+              <div className="rounded-[32px] bg-slate-100 p-6">
+                <div className="mb-8 flex h-[min(72vh,860px)] items-center justify-center rounded-[28px] bg-gradient-to-br from-violet-200 via-violet-100 to-slate-200">
                   <div className="text-center">
-                    <p className="text-sm font-semibold text-violet-100">Audio Replay</p>
-                    <p className="mt-2 text-4xl font-semibold tabular-nums text-white">
-                      {Math.floor(currentTime / 60).toString().padStart(2, "0")}:
-                      {Math.floor(currentTime % 60).toString().padStart(2, "0")}
-                    </p>
+                    <p className="text-sm font-semibold text-violet-700">Audio Replay</p>
+                    <p className="mt-2 text-5xl font-semibold tabular-nums text-slate-950">{formatClock(currentTimeMs)}</p>
                   </div>
                 </div>
                 <audio
@@ -190,52 +263,83 @@ export default function SessionReplayPage({ params }: { params: Promise<{ sessio
                   controls
                   className="w-full"
                   src={mediaUrl}
-                  onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+                  onTimeUpdate={(event) => setCurrentTimeMs(Math.round(event.currentTarget.currentTime * 1000))}
                 />
               </div>
             )
           ) : (
-            <div className="flex aspect-video items-center justify-center rounded-3xl border border-dashed border-white/20 bg-white/5 px-6 text-center text-sm leading-7 text-slate-300">
-              当前会话还没有可播放媒体。这一版回放先保证文字稿时间轴可用，真实音视频回放链路后续接入。
+            <div className="flex h-[min(72vh,860px)] items-center justify-center rounded-[32px] border border-dashed border-slate-300 bg-slate-50 px-8 text-center text-sm leading-7 text-slate-500">
+              这次会话还没有可播放视频，当前先按时间轴查看文字稿和 AI Live Coach 建议。
             </div>
           )}
         </Card>
 
-        <Card className="flex max-h-[calc(100vh-180px)] min-h-[560px] flex-col p-6">
+        <Card className="flex max-h-[calc(100vh-190px)] min-h-[760px] flex-col p-7 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
           <div className="mb-5 flex items-center justify-between gap-3">
             <div>
-              <p className="text-sm text-slate-500">完整文字稿</p>
-              <h2 className="mt-1 text-xl font-semibold text-slate-950">Transcript Timeline</h2>
+              <p className="text-sm text-slate-500">右侧时间线</p>
+              <h2 className="mt-1 text-2xl font-semibold text-slate-950">文字稿 + AI Live Coach</h2>
             </div>
             <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500">
-              {replay.transcript.length} 段
+              {replay.transcript.length} 段文字稿 · {replay.coachInsights.length} 条建议
             </span>
           </div>
 
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
-            {replay.transcript.length === 0 ? (
+            {timelineItems.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-8 text-sm leading-7 text-slate-400">
-                本次练习还没有生成完整文字稿。
+                本次练习还没有生成可回放时间线。
               </div>
             ) : null}
 
-            {orderedTranscript.map((item) => {
-              const active = item.id === activeTranscriptId;
+            {timelineItems.map((item) => {
+              const active = item.id === activeTimelineId;
+
+              if (item.type === "transcript") {
+                return (
+                  <button
+                    key={item.id}
+                    ref={(node) => {
+                      timelineItemRefs.current[item.id] = node;
+                    }}
+                    type="button"
+                    onClick={() => seekTo(item.startMs)}
+                    className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
+                      active
+                        ? "border-violet-500 bg-violet-600 text-white shadow-[0_18px_40px_rgba(109,40,217,0.22)]"
+                        : "border-slate-200 bg-slate-50 text-slate-900 hover:bg-slate-100"
+                    }`}
+                  >
+                    <div className={`mb-2 flex items-center justify-between text-xs ${active ? "text-violet-100" : "text-slate-400"}`}>
+                      <span>文字稿</span>
+                      <span>{item.payload.timestampLabel}</span>
+                    </div>
+                    <p className={`text-sm leading-6 ${active ? "text-white" : "text-slate-700"}`}>{item.payload.text}</p>
+                  </button>
+                );
+              }
 
               return (
                 <button
                   key={item.id}
+                  ref={(node) => {
+                    timelineItemRefs.current[item.id] = node;
+                  }}
                   type="button"
-                  onClick={() => seekToTranscript(item)}
-                  className={`w-full rounded-2xl px-4 py-3 text-left transition ${
-                    active ? "bg-violet-600 text-white shadow-[0_16px_34px_rgba(109,40,217,0.22)]" : "bg-slate-50 hover:bg-slate-100"
-                  }`}
+                  onClick={() => seekTo(item.startMs)}
+                  className={`w-full rounded-2xl border px-4 py-3 text-left transition ${getCoachToneClasses(item.payload, active)}`}
                 >
-                  <div className={`mb-2 flex items-center justify-between text-xs ${active ? "text-violet-100" : "text-slate-400"}`}>
-                    <span>{item.speaker === "user" ? "你" : "AI"}</span>
-                    <span>{item.timestampLabel}</span>
+                  <div className={`mb-2 flex items-center justify-between text-xs ${active ? "text-violet-100" : "text-slate-500"}`}>
+                    <span>AI Live Coach</span>
+                    <span>{formatClock(item.startMs)}</span>
                   </div>
-                  <p className={`text-sm leading-6 ${active ? "text-white" : "text-slate-700"}`}>{item.text}</p>
+                  <p className="text-sm font-semibold leading-6">{item.payload.title}</p>
+                  <p className={`mt-2 text-sm leading-6 ${active ? "text-violet-50" : "text-current/80"}`}>{item.payload.message}</p>
+                  {item.payload.evidenceText ? (
+                    <p className={`mt-2 text-xs leading-5 ${active ? "text-violet-100" : "text-current/65"}`}>
+                      证据：{item.payload.evidenceText}
+                    </p>
+                  ) : null}
                 </button>
               );
             })}

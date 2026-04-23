@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 
 import { HistorySidebar } from "@/components/session/history-sidebar";
 import { LiveAnalysisPanel } from "@/components/session/live-analysis-panel";
@@ -13,7 +13,7 @@ import { useSessionResult } from "@/components/session/session-provider";
 import { primeAudioPlayback } from "@/lib/audio-playback";
 import { TranscriptPanel } from "@/components/session/transcript-panel";
 import { useMockSession } from "@/hooks/useMockSession";
-import { extractDocumentText, getQAVoiceProfiles, getScenarios } from "@/lib/api";
+import { extractDocumentText, getQAVoiceProfiles, getScenarios, uploadSessionReplayMedia } from "@/lib/api";
 import type {
   LanguageOption,
   ScenarioOption,
@@ -43,6 +43,28 @@ const fallbackVoiceProfiles: VoiceProfile[] = [
   },
 ];
 
+function getReplayCaptureMimeType() {
+  if (typeof window === "undefined" || typeof MediaRecorder === "undefined") {
+    return "";
+  }
+
+  const candidates = [
+    "video/webm;codecs=vp9",
+    "video/webm;codecs=vp8",
+    "video/webm",
+    "video/mp4",
+  ];
+
+  return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) ?? "";
+}
+
+function buildReplayFilename(mimeType: string) {
+  if (mimeType.includes("mp4")) {
+    return "replay-video.mp4";
+  }
+  return "replay-video.webm";
+}
+
 export function SessionWorkspace({
   defaultLanguage = "zh",
   defaultScenario = "host",
@@ -71,6 +93,13 @@ export function SessionWorkspace({
   const [selectedScenarioId, setSelectedScenarioId] = useState<ScenarioType>(defaultScenario);
   const documentInputRef = useRef<HTMLInputElement | null>(null);
   const currentDocumentUrlRef = useRef<string | null>(null);
+  const replayCameraStreamRef = useRef<MediaStream | null>(null);
+  const replayRecorderRef = useRef<MediaRecorder | null>(null);
+  const replayStopTaskRef = useRef<Promise<void> | null>(null);
+  const replayChunksRef = useRef<Blob[]>([]);
+  const replaySessionIdRef = useRef<string | null>(null);
+  const replayStartAtMsRef = useRef(0);
+  const replayMimeTypeRef = useRef("");
 
   useEffect(() => {
     router.prefetch("/report");
@@ -152,6 +181,7 @@ export function SessionWorkspace({
     manualText: null,
   });
   const {
+    audioCaptureStream,
     activeTranscript,
     coachPanel,
     elapsedSeconds,
@@ -182,6 +212,113 @@ export function SessionWorkspace({
     updateQAPrewarmContext,
   } = session;
 
+  const stopReplayCapture = useCallback(async (options?: {
+    sessionId?: string | null;
+    upload?: boolean;
+  }) => {
+    if (replayStopTaskRef.current) {
+      return replayStopTaskRef.current;
+    }
+
+    const recorder = replayRecorderRef.current;
+    replayRecorderRef.current = null;
+
+    if (!recorder) {
+      replayChunksRef.current = [];
+      return;
+    }
+
+    const task = (async () => {
+      const activeSessionId = options?.sessionId ?? replaySessionIdRef.current;
+      const shouldUpload = options?.upload === true && !!activeSessionId;
+
+      await new Promise<void>((resolve) => {
+        recorder.onstop = () => {
+          resolve();
+        };
+        if (recorder.state === "inactive") {
+          resolve();
+          return;
+        }
+        recorder.stop();
+      });
+
+      const chunks = replayChunksRef.current;
+      const mimeType = replayMimeTypeRef.current || recorder.mimeType || "video/webm";
+      const durationMs = Math.max(0, Date.now() - replayStartAtMsRef.current);
+
+      replayChunksRef.current = [];
+      replaySessionIdRef.current = null;
+      replayMimeTypeRef.current = "";
+      replayStartAtMsRef.current = 0;
+
+      if (!shouldUpload || !activeSessionId || chunks.length === 0) {
+        return;
+      }
+
+      const blob = new Blob(chunks, { type: mimeType });
+      if (blob.size === 0) {
+        return;
+      }
+
+      const file = new File([blob], buildReplayFilename(mimeType), { type: mimeType });
+      await uploadSessionReplayMedia(activeSessionId, file, durationMs).catch(() => undefined);
+    })();
+
+    replayStopTaskRef.current = task;
+    await task.finally(() => {
+      replayStopTaskRef.current = null;
+    });
+  }, []);
+
+  const startReplayCapture = useCallback((activeSessionId: string) => {
+    if (replayRecorderRef.current || replayStopTaskRef.current || !replayCameraStreamRef.current) {
+      return;
+    }
+    if (typeof window === "undefined" || typeof MediaRecorder === "undefined") {
+      return;
+    }
+
+    const cameraStream = replayCameraStreamRef.current;
+    if (!cameraStream || cameraStream.getVideoTracks().length === 0 || !audioCaptureStream) {
+      return;
+    }
+    const audioTracks = audioCaptureStream.getAudioTracks();
+    if (audioTracks.length === 0) {
+      return;
+    }
+
+    const recordingStream = new MediaStream([
+      ...cameraStream.getVideoTracks(),
+      ...audioTracks,
+    ]);
+
+    const mimeType = getReplayCaptureMimeType();
+    const recorder = mimeType
+      ? new MediaRecorder(recordingStream, { mimeType })
+      : new MediaRecorder(recordingStream);
+
+    replayChunksRef.current = [];
+    replaySessionIdRef.current = activeSessionId;
+    replayMimeTypeRef.current = recorder.mimeType || mimeType;
+    replayStartAtMsRef.current = Date.now();
+
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        replayChunksRef.current.push(event.data);
+      }
+    };
+    recorder.start(1000);
+    replayRecorderRef.current = recorder;
+  }, [audioCaptureStream]);
+
+  const handleCameraStreamReady = useCallback((stream: MediaStream | null) => {
+    replayCameraStreamRef.current = stream;
+    if (stream && isRunning && sessionId && audioCaptureStream) {
+      startReplayCapture(sessionId);
+    }
+  }, [audioCaptureStream, isRunning, sessionId, startReplayCapture]);
+
   const closeHistory = () => setHistoryOpen(false);
   const controlsDisabled = isLoading;
   const statusMessage = useMemo(
@@ -203,6 +340,16 @@ export function SessionWorkspace({
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (isRunning && sessionId && audioCaptureStream) {
+      startReplayCapture(sessionId);
+    }
+  }, [audioCaptureStream, isRunning, sessionId, startReplayCapture]);
+
+  useEffect(() => () => {
+    void stopReplayCapture({ upload: false });
+  }, [stopReplayCapture]);
 
   const openDocumentPicker = () => {
     documentInputRef.current?.click();
@@ -362,14 +509,29 @@ export function SessionWorkspace({
     const finishedSessionId = sessionId;
     const { active, committed } = flushTranscript();
     const nextTranscript = active ? [...committed, active] : committed;
+    const uploadPromise = stopReplayCapture({
+      sessionId: finishedSessionId,
+      upload: !!finishedSessionId,
+    });
 
     primeAudioPlayback();
     void saveResult({ scenarioId, language }, nextTranscript, finishedSessionId).catch(() => undefined);
     router.push("/report");
 
     window.setTimeout(() => {
+      void uploadPromise.catch(() => undefined);
       void finish().catch(() => undefined);
     }, 0);
+  };
+
+  const pauseSession = () => {
+    void stopReplayCapture({ upload: false }).catch(() => undefined);
+    void pause().catch(() => undefined);
+  };
+
+  const resetSession = () => {
+    void stopReplayCapture({ upload: false }).catch(() => undefined);
+    void reset().catch(() => undefined);
   };
 
   const activeVoiceProfileId = qaState.voiceProfileId ?? selectedVoiceProfileId;
@@ -486,8 +648,8 @@ export function SessionWorkspace({
                   disabled={controlsDisabled}
                   isRunning={isRunning}
                   onFinish={finishSession}
-                  onPause={pause}
-                  onReset={reset}
+                  onPause={pauseSession}
+                  onReset={resetSession}
                   onStart={start}
                 />
               }
@@ -502,6 +664,7 @@ export function SessionWorkspace({
               qaEnabled={qaEnabled}
               question={displayedQuestion}
               registerVideoFrameProvider={registerVideoFrameProvider}
+              onCameraStreamReady={handleCameraStreamReady}
               sessionId={sessionId}
               speaking={interviewerSpeaking}
               statusMessage={statusMessage}
@@ -530,8 +693,8 @@ export function SessionWorkspace({
                 disabled={controlsDisabled}
                 isRunning={isRunning}
                 onFinish={finishSession}
-                onPause={pause}
-                onReset={reset}
+                onPause={pauseSession}
+                onReset={resetSession}
                 onStart={start}
               />
             </div>

@@ -330,18 +330,6 @@ class SessionReport(BaseModel):
     progress: ReportProgressState = Field(default_factory=ReportProgressState)
 
 
-class ReportReassuranceAudioResponse(BaseModel):
-    text: str
-    audioUrl: str
-    durationMs: int
-    voiceProfileId: str
-
-
-class ReportReassuranceAudioRequest(BaseModel):
-    attemptIndex: int = 0
-    voiceProfileId: str | None = None
-
-
 class SessionStreamFrame(BaseModel):
     second: int
     transcript: TranscriptChunk
@@ -367,13 +355,34 @@ class RealtimeSessionResponse(RealtimeSession):
     websocketUrl: str
 
 
+class ReplayCoachInsight(BaseModel):
+    id: str
+    startMs: int
+    endMs: int
+    dimensionId: CoachDimensionId
+    subDimensionId: str | None = None
+    severity: CoachSignalSeverity = "medium"
+    polarity: CoachSignalPolarity = "neutral"
+    title: str
+    message: str
+    evidenceText: str | None = None
+
+
 class SessionReplay(BaseModel):
     sessionId: str
     scenarioId: ScenarioType
     language: LanguageOption
     mediaUrl: str | None = None
     mediaType: Literal["audio", "video"] | None = None
-    transcript: list[TranscriptChunk]
+    durationMs: int = 0
+    transcript: list[TranscriptChunk] = Field(default_factory=list)
+    coachInsights: list[ReplayCoachInsight] = Field(default_factory=list)
+
+
+class ReplayMediaUploadResponse(BaseModel):
+    mediaUrl: str
+    mediaType: Literal["audio", "video"]
+    durationMs: int = 0
 
 
 class RealtimeStatusEvent(BaseModel):

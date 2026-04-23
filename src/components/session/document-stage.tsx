@@ -15,6 +15,7 @@ interface DocumentStageProps {
   isRunning: boolean;
   onDocumentPick: () => void;
   onFrameCaptureReady?: (capture: () => string | null) => void;
+  onStreamReady?: (stream: MediaStream | null) => void;
   sessionId: string | null;
   statusMessage: string | null;
 }
@@ -311,6 +312,7 @@ export function DocumentStage({
   isRunning,
   onDocumentPick,
   onFrameCaptureReady,
+  onStreamReady,
   sessionId,
   statusMessage,
 }: DocumentStageProps) {
@@ -342,12 +344,13 @@ export function DocumentStage({
         </div>
 
         <div className="absolute right-5 top-5 z-20 h-[144px] w-[219px]">
-          <CameraPanel
-            elapsedSeconds={elapsedSeconds}
-            isRunning={isRunning}
-            onFrameCaptureReady={onFrameCaptureReady}
-            variant="inset"
-          >
+            <CameraPanel
+              elapsedSeconds={elapsedSeconds}
+              isRunning={isRunning}
+              onFrameCaptureReady={onFrameCaptureReady}
+              onStreamReady={onStreamReady}
+              variant="inset"
+            >
             <div />
           </CameraPanel>
         </div>

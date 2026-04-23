@@ -138,11 +138,26 @@ export interface TrainingDocumentAsset {
   preview: TrainingDocumentPreview;
 }
 
+export interface ReplayCoachInsight {
+  id: string;
+  startMs: number;
+  endMs: number;
+  dimensionId: CoachDimensionId;
+  subDimensionId: string | null;
+  severity: "low" | "medium" | "high";
+  polarity: "positive" | "neutral" | "negative";
+  title: string;
+  message: string;
+  evidenceText: string | null;
+}
+
 export interface SessionReplay {
   sessionId: string;
   scenarioId: ScenarioType;
   language: LanguageOption;
   mediaUrl: string | null;
   mediaType: "audio" | "video" | null;
+  durationMs: number;
   transcript: TranscriptChunk[];
+  coachInsights: ReplayCoachInsight[];
 }

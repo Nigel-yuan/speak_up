@@ -8,6 +8,7 @@ import {
   type OutboundRealtimeMessage,
   type RealtimeEvent,
 } from "@/lib/api";
+import { getApiBaseUrl } from "@/lib/api-base";
 import type {
   CoachPanelState,
   QAFeedback,
@@ -56,7 +57,6 @@ const PARTIAL_FILLER_TOKENS = {
 const PARTIAL_NOISE_PATTERN = /^[\s,.!?，。！？、…]+$/;
 const SHORT_PARTIAL_WORDS_MAX = 3;
 const SHORT_PARTIAL_CHARS_MAX = 4;
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 const idleQAState: QAState = {
   enabled: false,
   phase: "idle",
@@ -317,7 +317,7 @@ function resolveApiUrl(url: string | null | undefined) {
     return url;
   }
 
-  return `${API_BASE_URL}${url}`;
+  return `${getApiBaseUrl()}${url}`;
 }
 
 export function useMockSession(setup: SessionSetup) {
@@ -333,6 +333,7 @@ export function useMockSession(setup: SessionSetup) {
   const sessionStartedAtRef = useRef<number | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
+  const [audioCaptureStream, setAudioCaptureStream] = useState<MediaStream | null>(null);
   const [transcript, setTranscript] = useState<TranscriptChunk[]>([]);
   const [activeTranscript, setActiveTranscript] = useState<TranscriptChunk | null>(null);
   const [coachPanel, setCoachPanel] = useState<CoachPanelState | null>(null);
@@ -411,6 +412,7 @@ export function useMockSession(setup: SessionSetup) {
     transcriptStateRef.current = createEmptyTranscriptState();
     sessionStartedAtRef.current = null;
     setIsRunning(false);
+    setAudioCaptureStream(null);
     setElapsedSeconds(0);
     setTranscript([]);
     setActiveTranscript(null);
@@ -574,6 +576,7 @@ export function useMockSession(setup: SessionSetup) {
     const stream = audioStreamRef.current;
 
     audioStreamRef.current = null;
+    setAudioCaptureStream(null);
 
     await stopRealtimePcmCapture();
     stream?.getTracks().forEach((track) => track.stop());
@@ -696,6 +699,7 @@ export function useMockSession(setup: SessionSetup) {
   const startAudioCapture = useCallback(async () => {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     audioStreamRef.current = stream;
+    setAudioCaptureStream(stream);
 
     try {
       const audioContext = new AudioContext({ sampleRate: PCM_SAMPLE_RATE });
@@ -735,6 +739,7 @@ export function useMockSession(setup: SessionSetup) {
     } catch (error) {
       audioStreamRef.current?.getTracks().forEach((track) => track.stop());
       audioStreamRef.current = null;
+      setAudioCaptureStream(null);
       await stopRealtimePcmCapture();
       throw error;
     }
@@ -1119,6 +1124,7 @@ export function useMockSession(setup: SessionSetup) {
   }, [clearMediaTimer, clearSocket, discardAudioCapture, stopQAAudioPlayback]);
 
   return {
+    audioCaptureStream,
     coachPanel,
     elapsedSeconds,
     isLoading: sessionState.isConnecting || sessionState.isFinalizing,

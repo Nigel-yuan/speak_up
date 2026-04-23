@@ -12,7 +12,6 @@ from app.schemas import (
     QAQuestion,
     ReportProgressState,
     ReportProgressStep,
-    ReportReassuranceAudioResponse,
     ReportSectionStatus,
     ReportWindowPack,
     ScenarioType,
@@ -22,7 +21,6 @@ from app.schemas import (
 from app.services.report_artifact_service import ReportArtifactService
 from app.services.report_brain_service import ReportBrainService
 from app.services.report_repository import ReportRepository
-from app.services.report_reassurance_service import ReportReassuranceService
 from app.services.report_signal_service import ReportSignalBundle, ReportSignalService
 from app.services.report_window_builder_service import ReportWindowBuilderService
 
@@ -54,7 +52,6 @@ class ReportJobService:
         self.signal_service = ReportSignalService()
         self.repository = ReportRepository()
         self.brain_service = ReportBrainService()
-        self.reassurance_service = ReportReassuranceService()
         self.window_builder_service = ReportWindowBuilderService(
             artifact_service=self.artifact_service,
             signal_service=self.signal_service,
@@ -310,31 +307,6 @@ class ReportJobService:
         if state is None:
             return None
         return await self.generate_final_report(session_id)
-
-    async def generate_reassurance_audio(
-        self,
-        session_id: str,
-        *,
-        attempt_index: int = 0,
-        voice_profile_id: str | None = None,
-    ) -> ReportReassuranceAudioResponse | None:
-        state = await self.repository.get_state(session_id)
-        if state is None:
-            return None
-        context = await self._ensure_context(session_id, state=state)
-        audio = await self.reassurance_service.synthesize(
-            session_id=session_id,
-            scenario_id=context.scenario_id,
-            language=context.language,
-            attempt_index=attempt_index,
-            voice_profile_id=voice_profile_id,
-        )
-        return ReportReassuranceAudioResponse(
-            text=audio.text,
-            audioUrl=audio.audio_url,
-            durationMs=audio.duration_ms,
-            voiceProfileId=audio.voice_profile_id,
-        )
 
     async def get_report(self, session_id: str) -> SessionReport | None:
         state = await self.repository.get_state(session_id)

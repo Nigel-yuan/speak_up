@@ -125,15 +125,13 @@ Live Coach 仍然只负责实时反馈，不负责赛后整场归纳。
 
 - `GET /api/session/{session_id}/report`
 
-如果生成耗时较长，会触发独立的安抚语音旁路：
+等待态不再使用额外安抚语音。
 
-- `POST /api/session/{session_id}/report/reassurance-audio`
+当前页面会明确提示用户：
 
-当前规则：
-
-- 进入 processing 后可立即触发安抚
-- 报告 ready 后立刻淡出并停止
-- 最多播 3 次，不无限循环
+- 可以先进入“回放复盘”
+- 先查看视频、文字稿和 AI Live Coach 时间线
+- 用这段时间缓冲报告生成
 
 ## 8. 当前边界
 

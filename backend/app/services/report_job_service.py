@@ -40,6 +40,7 @@ REPORT_PROGRESS_STEP_ORDER = tuple(REPORT_PROGRESS_STEP_LABELS.keys())
 class ReportJobContext:
     scenario_id: ScenarioType
     language: LanguageOption
+    coach_profile_id: str | None = None
     finished: bool = False
 
 
@@ -63,8 +64,19 @@ class ReportJobService:
         self._contexts: dict[str, ReportJobContext] = {}
         self._window_tasks: dict[str, asyncio.Task[None]] = {}
 
-    async def register_session(self, *, session_id: str, scenario_id: ScenarioType, language: LanguageOption) -> None:
-        self._contexts[session_id] = ReportJobContext(scenario_id=scenario_id, language=language)
+    async def register_session(
+        self,
+        *,
+        session_id: str,
+        scenario_id: ScenarioType,
+        language: LanguageOption,
+        coach_profile_id: str | None = None,
+    ) -> None:
+        self._contexts[session_id] = ReportJobContext(
+            scenario_id=scenario_id,
+            language=language,
+            coach_profile_id=coach_profile_id,
+        )
         await self.artifact_service.init_session(
             session_id=session_id,
             scenario_id=scenario_id,
@@ -74,7 +86,17 @@ class ReportJobService:
             session_id=session_id,
             scenario_id=scenario_id,
             language=language,
+            coach_profile_id=coach_profile_id,
         )
+
+    async def update_coach_profile(self, session_id: str, coach_profile_id: str | None) -> None:
+        context = self._contexts.get(session_id)
+        if context is not None:
+            context.coach_profile_id = coach_profile_id
+        state = await self.repository.get_state(session_id)
+        if state is None or state.coachProfileId == coach_profile_id:
+            return
+        await self.repository.save_state(state.model_copy(update={"coachProfileId": coach_profile_id}))
 
     def start_periodic_build(self, session_id: str) -> None:
         if session_id in self._window_tasks:
@@ -248,6 +270,7 @@ class ReportJobService:
                 session_id=session_id,
                 scenario_id=context.scenario_id,
                 language=context.language,
+                coach_profile_id=context.coach_profile_id,
                 window_packs=window_packs,
                 tail_bundle=tail_bundle,
             )
@@ -444,7 +467,11 @@ class ReportJobService:
         current_state = state or await self.repository.get_state(session_id)
         if current_state is None:
             raise FileNotFoundError(f"report session {session_id} not found")
-        context = ReportJobContext(scenario_id=current_state.scenarioId, language=current_state.language)
+        context = ReportJobContext(
+            scenario_id=current_state.scenarioId,
+            language=current_state.language,
+            coach_profile_id=current_state.coachProfileId,
+        )
         self._contexts[session_id] = context
         return context
 
@@ -452,6 +479,7 @@ class ReportJobService:
         is_processing = state.status == "processing"
         return SessionReport(
             sessionId=session_id,
+            coachProfileId=state.coachProfileId,
             status=state.status,
             headline="AI 分析中..." if is_processing else "报告暂时不可用",
             encouragement="回放和文字稿已经可看，报告会逐步补全。" if is_processing else (state.errorMessage or "请稍后重试。"),

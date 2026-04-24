@@ -1,6 +1,7 @@
 import type { HistoricalSessionSummary, SessionReport } from "@/types/report";
 import type {
   CoachPanelState,
+  CoachProfileId,
   QAFeedback,
   QAAudioStreamDelta,
   QAAudioStreamEnd,
@@ -91,6 +92,7 @@ export interface RealtimeSession {
   sessionId: string;
   scenarioId: ScenarioType;
   language: LanguageOption;
+  coachProfileId: CoachProfileId | null;
   status: "created" | "streaming" | "finished";
   transcriptCount: number;
   audioChunkCount: number;
@@ -167,10 +169,11 @@ export function uploadSessionReplayMedia(sessionId: string, file: File, duration
 export function startRealtimeSession(
   scenarioId: ScenarioType,
   language: LanguageOption,
+  coachProfileId: CoachProfileId,
 ) {
   return request<RealtimeSessionResponse>("/api/session/start", {
     method: "POST",
-    body: JSON.stringify({ scenarioId, language }),
+    body: JSON.stringify({ scenarioId, language, coachProfileId }),
   });
 }
 

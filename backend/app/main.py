@@ -154,11 +154,12 @@ def get_report(
 
 @app.post("/api/session/start", response_model=RealtimeSessionResponse)
 async def start_session(payload: StartSessionRequest, request: Request) -> RealtimeSessionResponse:
-    session = session_manager.create_session(payload.scenarioId, payload.language)
+    session = session_manager.create_session(payload.scenarioId, payload.language, payload.coachProfileId)
     await session_manager.report_job_service.register_session(
         session_id=session.session_id,
         scenario_id=payload.scenarioId,
         language=payload.language,
+        coach_profile_id=session.coach_profile_id,
     )
     websocket_scheme = "wss" if request.url.scheme == "https" else "ws"
     websocket_url = f"{websocket_scheme}://{request.headers.get('host', '127.0.0.1:8000')}/ws/session/{session.session_id}"

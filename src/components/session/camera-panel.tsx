@@ -9,6 +9,8 @@ interface CameraPanelProps {
   children: React.ReactNode;
   isRunning: boolean;
   elapsedSeconds: number;
+  cameraStream?: MediaStream | null;
+  cameraPermissionState?: "idle" | "granted" | "denied";
   onFrameCaptureReady?: (capture: () => string | null) => void;
   onStreamReady?: (stream: MediaStream | null) => void;
   variant?: "stage" | "inset";
@@ -51,6 +53,8 @@ export function CameraPanel({
   children,
   isRunning,
   elapsedSeconds,
+  cameraStream,
+  cameraPermissionState,
   onFrameCaptureReady,
   onStreamReady,
   variant = "stage",
@@ -58,7 +62,11 @@ export function CameraPanel({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamReadyCallbackRef = useRef(onStreamReady);
-  const [permissionState, setPermissionState] = useState<"idle" | "granted" | "denied">("idle");
+  const [localPermissionState, setLocalPermissionState] = useState<"idle" | "granted" | "denied">("idle");
+  const isExternallyManaged = cameraStream !== undefined;
+  const permissionState = isExternallyManaged
+    ? cameraPermissionState ?? (cameraStream ? "granted" : "idle")
+    : localPermissionState;
 
   const handleVideoRef = useCallback((node: HTMLVideoElement | null) => {
     videoRef.current = node;
@@ -69,6 +77,22 @@ export function CameraPanel({
   }, [onStreamReady]);
 
   useEffect(() => {
+    if (isExternallyManaged) {
+      if (videoRef.current && videoRef.current.srcObject !== cameraStream) {
+        videoRef.current.srcObject = cameraStream;
+        if (cameraStream) {
+          void videoRef.current.play().catch(() => {
+            // The browser may delay playback until metadata is ready.
+          });
+        }
+      }
+      return () => {
+        if (videoRef.current?.srcObject === cameraStream) {
+          videoRef.current.srcObject = null;
+        }
+      };
+    }
+
     let stream: MediaStream | null = null;
 
     async function enableCamera() {
@@ -80,10 +104,10 @@ export function CameraPanel({
             // The browser may delay playback until metadata is ready.
           });
         }
-        setPermissionState("granted");
+        setLocalPermissionState("granted");
         streamReadyCallbackRef.current?.(stream);
       } catch {
-        setPermissionState("denied");
+        setLocalPermissionState("denied");
         streamReadyCallbackRef.current?.(null);
       }
     }
@@ -94,7 +118,7 @@ export function CameraPanel({
       streamReadyCallbackRef.current?.(null);
       stream?.getTracks().forEach((track) => track.stop());
     };
-  }, []);
+  }, [cameraStream, isExternallyManaged]);
 
   useEffect(() => {
     if (!onFrameCaptureReady) {

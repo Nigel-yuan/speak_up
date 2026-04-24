@@ -64,6 +64,7 @@ export interface ReportProgressState {
 
 export interface SessionReport {
   sessionId: string;
+  coachProfileId: string | null;
   status: "processing" | "ready" | "failed";
   overallScore: number;
   headline: string;

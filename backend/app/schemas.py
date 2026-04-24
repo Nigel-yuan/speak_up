@@ -155,6 +155,7 @@ class CoachPanelPatch(BaseModel):
 class SessionSetup(BaseModel):
     scenarioId: ScenarioType
     language: LanguageOption
+    coachProfileId: str | None = None
 
 
 class VoiceProfile(BaseModel):
@@ -298,6 +299,7 @@ class ReportRepositoryState(BaseModel):
     sessionId: str
     scenarioId: ScenarioType
     language: LanguageOption
+    coachProfileId: str | None = None
     lastCoveredMs: int = 0
     windowCount: int = 0
     status: ReportStatus = "processing"
@@ -316,6 +318,7 @@ class ReportSectionStatus(BaseModel):
 
 class SessionReport(BaseModel):
     sessionId: str
+    coachProfileId: str | None = None
     status: ReportStatus = "ready"
     overallScore: int = 0
     headline: str = ""
@@ -339,12 +342,14 @@ class SessionStreamFrame(BaseModel):
 class StartSessionRequest(BaseModel):
     scenarioId: ScenarioType
     language: LanguageOption
+    coachProfileId: str | None = None
 
 
 class RealtimeSession(BaseModel):
     sessionId: str
     scenarioId: ScenarioType
     language: LanguageOption
+    coachProfileId: str | None = None
     status: SessionStatus
     transcriptCount: int = 0
     audioChunkCount: int = 0
@@ -372,6 +377,7 @@ class SessionReplay(BaseModel):
     sessionId: str
     scenarioId: ScenarioType
     language: LanguageOption
+    coachProfileId: str | None = None
     mediaUrl: str | None = None
     mediaType: Literal["audio", "video"] | None = None
     durationMs: int = 0

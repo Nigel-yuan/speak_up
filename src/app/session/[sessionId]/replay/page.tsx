@@ -1,9 +1,12 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { use, useEffect, useMemo, useRef, useState } from "react";
 
+import { useSessionResult } from "@/components/session/session-provider";
 import { Card } from "@/components/ui/card";
+import { getCoachProfileById, isCoachProfileId } from "@/lib/coach-profiles";
 import { getSessionReplay, resolveApiUrl } from "@/lib/api";
 import type { ReplayCoachInsight, SessionReplay, TranscriptChunk } from "@/types/session";
 
@@ -111,17 +114,85 @@ function getCoachToneClasses(insight: ReplayCoachInsight, active: boolean) {
 }
 
 function buildReportHref(sessionId: string, replay: SessionReplay) {
-  return `/report?sessionId=${sessionId}&scenario=${replay.scenarioId}&language=${replay.language}`;
+  const coachQuery = replay.coachProfileId ? `&coach=${replay.coachProfileId}` : "";
+  return `/report?sessionId=${sessionId}&scenario=${replay.scenarioId}&language=${replay.language}${coachQuery}`;
+}
+
+function ReplayMediaPlayer({
+  mediaRef,
+  mediaType,
+  mediaUrl,
+  currentTimeMs,
+  onTimeUpdate,
+  emptyMessage,
+}: {
+  mediaRef: React.RefObject<HTMLAudioElement | HTMLVideoElement | null>;
+  mediaType: "audio" | "video" | null;
+  mediaUrl: string | null;
+  currentTimeMs: number;
+  onTimeUpdate: (nextTimeMs: number) => void;
+  emptyMessage: string;
+}) {
+  if (!mediaUrl) {
+    return (
+      <div className="flex h-[min(72vh,860px)] items-center justify-center rounded-[32px] border border-dashed border-slate-300 bg-slate-50 px-8 text-center text-sm leading-7 text-slate-500">
+        {emptyMessage}
+      </div>
+    );
+  }
+
+  if (mediaType === "video") {
+    return (
+      <video
+        ref={mediaRef as React.RefObject<HTMLVideoElement>}
+        controls
+        playsInline
+        preload="auto"
+        className="h-[min(72vh,860px)] w-full rounded-[32px] object-cover object-center shadow-[0_18px_50px_rgba(15,23,42,0.16)]"
+        src={mediaUrl}
+        onTimeUpdate={(event) => onTimeUpdate(Math.round(event.currentTarget.currentTime * 1000))}
+      />
+    );
+  }
+
+  return (
+    <div className="rounded-[32px] bg-slate-100 p-6">
+      <div className="mb-8 flex h-[min(72vh,860px)] items-center justify-center rounded-[28px] bg-gradient-to-br from-violet-200 via-violet-100 to-slate-200">
+        <div className="text-center">
+          <p className="text-sm font-semibold text-violet-700">Audio Replay</p>
+          <p className="mt-2 text-5xl font-semibold tabular-nums text-slate-950">{formatClock(currentTimeMs)}</p>
+        </div>
+      </div>
+      <audio
+        ref={mediaRef as React.RefObject<HTMLAudioElement>}
+        controls
+        preload="auto"
+        className="w-full"
+        src={mediaUrl}
+        onTimeUpdate={(event) => onTimeUpdate(Math.round(event.currentTarget.currentTime * 1000))}
+      />
+    </div>
+  );
 }
 
 export default function SessionReplayPage({ params }: { params: Promise<{ sessionId: string }> }) {
   const { sessionId } = use(params);
+  const { replayMedia } = useSessionResult();
   const mediaRef = useRef<HTMLAudioElement | HTMLVideoElement | null>(null);
   const timelineItemRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const [replay, setReplay] = useState<SessionReplay | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [currentTimeMs, setCurrentTimeMs] = useState(0);
+  const [mediaSyncAttempts, setMediaSyncAttempts] = useState(0);
+  const routeCoachProfileId = useMemo(() => {
+    if (typeof window === "undefined") {
+      return null;
+    }
+    const searchParams = new URLSearchParams(window.location.search);
+    const coachProfileId = searchParams.get("coach");
+    return isCoachProfileId(coachProfileId) ? coachProfileId : null;
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -133,6 +204,7 @@ export default function SessionReplayPage({ params }: { params: Promise<{ sessio
         }
 
         setReplay(nextReplay);
+        setMediaSyncAttempts(nextReplay.mediaUrl ? 0 : 1);
         setError(null);
       })
       .catch((loadError) => {
@@ -154,11 +226,47 @@ export default function SessionReplayPage({ params }: { params: Promise<{ sessio
     };
   }, [sessionId]);
 
+  useEffect(() => {
+    if (loading || error || !replay || replay.mediaUrl || mediaSyncAttempts >= 12) {
+      return;
+    }
+
+    let active = true;
+    const timer = window.setTimeout(() => {
+      void getSessionReplay(sessionId)
+        .then((nextReplay) => {
+          if (!active) {
+            return;
+          }
+          setReplay(nextReplay);
+          setMediaSyncAttempts((previous) => (nextReplay.mediaUrl ? 0 : previous + 1));
+        })
+        .catch(() => {
+          if (!active) {
+            return;
+          }
+          setMediaSyncAttempts((previous) => previous + 1);
+        });
+    }, 1000);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [error, loading, mediaSyncAttempts, replay, sessionId]);
+
+  const localReplayMedia = replayMedia?.sessionId === sessionId ? replayMedia : null;
   const mediaUrl = useMemo(() => resolveMediaUrl(replay?.mediaUrl ?? null), [replay?.mediaUrl]);
+  const effectiveMediaUrl = localReplayMedia?.url ?? mediaUrl;
+  const effectiveMediaType = localReplayMedia?.mediaType ?? replay?.mediaType ?? null;
+  const isWaitingForReplayMedia = !localReplayMedia && !replay?.mediaUrl && mediaSyncAttempts > 0 && mediaSyncAttempts < 12;
+  const replayEmptyMessage = isWaitingForReplayMedia
+    ? "回放视频正在落盘同步，通常几秒内就会出现，我会自动刷新，不需要你手动重进。"
+    : "这次会话还没有可播放视频，当前先按时间轴查看文字稿和 AI Live Coach 建议。";
   const timelineItems = useMemo(() => buildTimelineItems(replay), [replay]);
   const durationMs = useMemo(
-    () => Math.max(replay?.durationMs ?? 0, timelineItems[timelineItems.length - 1]?.endMs ?? 0),
-    [replay?.durationMs, timelineItems],
+    () => Math.max(replay?.durationMs ?? 0, localReplayMedia?.durationMs ?? 0, timelineItems[timelineItems.length - 1]?.endMs ?? 0),
+    [localReplayMedia?.durationMs, replay?.durationMs, timelineItems],
   );
   const activeTimelineId = useMemo(
     () => findActiveItemId(timelineItems, currentTimeMs),
@@ -205,7 +313,14 @@ export default function SessionReplayPage({ params }: { params: Promise<{ sessio
     );
   }
 
-  const reportHref = buildReportHref(sessionId, replay);
+  const activeCoachProfileId = routeCoachProfileId ?? replay.coachProfileId ?? null;
+  const coachProfile = getCoachProfileById(activeCoachProfileId);
+  const reportHref = activeCoachProfileId
+    ? `/report?sessionId=${sessionId}&scenario=${replay.scenarioId}&language=${replay.language}&coach=${activeCoachProfileId}`
+    : buildReportHref(sessionId, replay);
+  const restartHref = `/session?scenario=${replay.scenarioId}&language=${replay.language}${
+    activeCoachProfileId ? `&coach=${activeCoachProfileId}` : ""
+  }`;
 
   return (
     <main className="mx-auto min-h-screen w-full max-w-[1800px] px-4 py-6 md:px-8 xl:px-10">
@@ -219,9 +334,30 @@ export default function SessionReplayPage({ params }: { params: Promise<{ sessio
           <p className="mt-2 max-w-3xl text-sm leading-7 text-slate-500">
             {replay.language === "zh" ? "中文" : "English"} · {replay.scenarioId} · {timelineItems.length} 个时间点
           </p>
+          {coachProfile ? (
+            <div className="mt-4 inline-flex items-center gap-3 rounded-[24px] border border-violet-100 bg-white/92 px-4 py-3 shadow-[0_14px_34px_rgba(15,23,42,0.06)]">
+              <div className="relative h-14 w-14 overflow-hidden rounded-[18px] border border-violet-100 bg-violet-50">
+                <Image
+                  src={coachProfile.avatarSrc}
+                  alt={coachProfile.name}
+                  fill
+                  className="object-cover"
+                  sizes="56px"
+                />
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-violet-500">Replay Coach</p>
+                <p className="mt-1 text-base font-semibold text-slate-950">
+                  {coachProfile.name}
+                  <span className="ml-2 text-sm font-medium text-slate-500">{coachProfile.personaType}</span>
+                </p>
+                <p className="mt-1 text-sm text-slate-500">{coachProfile.liveStatus}</p>
+              </div>
+            </div>
+          ) : null}
         </div>
         <Link
-          href={`/session?scenario=${replay.scenarioId}&language=${replay.language}`}
+          href={restartHref}
           className="inline-flex items-center justify-center rounded-full bg-violet-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-violet-500"
         >
           再来一轮
@@ -240,38 +376,15 @@ export default function SessionReplayPage({ params }: { params: Promise<{ sessio
             </div>
           </div>
 
-          {mediaUrl ? (
-            replay.mediaType === "video" ? (
-              <video
-                ref={mediaRef as React.RefObject<HTMLVideoElement>}
-                controls
-                playsInline
-                className="h-[min(72vh,860px)] w-full rounded-[32px] object-cover object-center shadow-[0_18px_50px_rgba(15,23,42,0.16)]"
-                src={mediaUrl}
-                onTimeUpdate={(event) => setCurrentTimeMs(Math.round(event.currentTarget.currentTime * 1000))}
-              />
-            ) : (
-              <div className="rounded-[32px] bg-slate-100 p-6">
-                <div className="mb-8 flex h-[min(72vh,860px)] items-center justify-center rounded-[28px] bg-gradient-to-br from-violet-200 via-violet-100 to-slate-200">
-                  <div className="text-center">
-                    <p className="text-sm font-semibold text-violet-700">Audio Replay</p>
-                    <p className="mt-2 text-5xl font-semibold tabular-nums text-slate-950">{formatClock(currentTimeMs)}</p>
-                  </div>
-                </div>
-                <audio
-                  ref={mediaRef as React.RefObject<HTMLAudioElement>}
-                  controls
-                  className="w-full"
-                  src={mediaUrl}
-                  onTimeUpdate={(event) => setCurrentTimeMs(Math.round(event.currentTarget.currentTime * 1000))}
-                />
-              </div>
-            )
-          ) : (
-            <div className="flex h-[min(72vh,860px)] items-center justify-center rounded-[32px] border border-dashed border-slate-300 bg-slate-50 px-8 text-center text-sm leading-7 text-slate-500">
-              这次会话还没有可播放视频，当前先按时间轴查看文字稿和 AI Live Coach 建议。
-            </div>
-          )}
+          <ReplayMediaPlayer
+            key={effectiveMediaUrl ?? replay.mediaUrl ?? "no-media"}
+            mediaRef={mediaRef}
+            mediaType={effectiveMediaType}
+            mediaUrl={isWaitingForReplayMedia ? null : effectiveMediaUrl}
+            currentTimeMs={currentTimeMs}
+            onTimeUpdate={setCurrentTimeMs}
+            emptyMessage={replayEmptyMessage}
+          />
         </Card>
 
         <Card className="flex max-h-[calc(100vh-190px)] min-h-[760px] flex-col p-7 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
@@ -279,6 +392,11 @@ export default function SessionReplayPage({ params }: { params: Promise<{ sessio
             <div>
               <p className="text-sm text-slate-500">右侧时间线</p>
               <h2 className="mt-1 text-2xl font-semibold text-slate-950">文字稿 + AI Live Coach</h2>
+              {coachProfile ? (
+                <p className="mt-2 text-sm text-slate-500">
+                  当前由 <span className="font-semibold text-violet-700">{coachProfile.name}</span> 陪你一起复盘这次练习。
+                </p>
+              ) : null}
             </div>
             <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500">
               {replay.transcript.length} 段文字稿 · {replay.coachInsights.length} 条建议

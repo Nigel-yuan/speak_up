@@ -277,7 +277,7 @@ export function LiveAnalysisPanel({
       <div className="mb-3 flex items-center justify-between">
         <div>
           <p className="text-sm text-slate-500">{language === "en" ? "Synchronized analysis" : "同步分析"}</p>
-          <h3 className="text-lg font-semibold text-slate-950">AI Live Coach</h3>
+          <h3 className="text-lg font-semibold text-slate-950">Live Analysis</h3>
         </div>
         <Badge
           tone={getStatusTone(

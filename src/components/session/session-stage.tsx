@@ -8,6 +8,8 @@ import type { QAFeedback, QAQuestion, QAPhase, TrainingDocumentAsset, TrainingMo
 
 interface SessionStageProps {
   avatarSrc: string;
+  cameraPermissionState: "idle" | "granted" | "denied";
+  cameraStream: MediaStream | null;
   controls: React.ReactNode;
   documentAsset: TrainingDocumentAsset | null;
   elapsedSeconds: number;
@@ -20,12 +22,10 @@ interface SessionStageProps {
   qaEnabled: boolean;
   question: QAQuestion | null;
   registerVideoFrameProvider: (capture: () => string | null) => void;
-  onCameraStreamReady?: (stream: MediaStream | null) => void;
   sessionId: string | null;
   speaking: boolean;
   statusMessage: string | null;
   trainingMode: TrainingMode;
-  voiceLabel: string | null;
   onQAAudioPlaybackEnded: (turnId: string) => void;
   onQAAudioPlaybackStarted: (turnId: string) => void;
   onDocumentPick: () => void;
@@ -34,6 +34,8 @@ interface SessionStageProps {
 
 export function SessionStage({
   avatarSrc,
+  cameraPermissionState,
+  cameraStream,
   controls,
   documentAsset,
   elapsedSeconds,
@@ -46,12 +48,10 @@ export function SessionStage({
   qaEnabled,
   question,
   registerVideoFrameProvider,
-  onCameraStreamReady,
   sessionId,
   speaking,
   statusMessage,
   trainingMode,
-  voiceLabel,
   onQAAudioPlaybackEnded,
   onQAAudioPlaybackStarted,
   onDocumentPick,
@@ -64,9 +64,10 @@ export function SessionStage({
           documentAsset={documentAsset}
           elapsedSeconds={elapsedSeconds}
           isRunning={isRunning}
+          cameraPermissionState={cameraPermissionState}
+          cameraStream={cameraStream}
           onDocumentPick={onDocumentPick}
           onFrameCaptureReady={registerVideoFrameProvider}
-          onStreamReady={onCameraStreamReady}
           sessionId={sessionId}
           statusMessage={statusMessage}
         >
@@ -79,8 +80,9 @@ export function SessionStage({
       <CameraPanel
         elapsedSeconds={elapsedSeconds}
         isRunning={isRunning}
+        cameraPermissionState={cameraPermissionState}
+        cameraStream={cameraStream}
         onFrameCaptureReady={registerVideoFrameProvider}
-        onStreamReady={onCameraStreamReady}
       >
         <div className="space-y-2">
           {statusMessage ? (
@@ -108,8 +110,9 @@ export function SessionStage({
           <CameraPanel
             elapsedSeconds={elapsedSeconds}
             isRunning={isRunning}
+            cameraPermissionState={cameraPermissionState}
+            cameraStream={cameraStream}
             onFrameCaptureReady={registerVideoFrameProvider}
-            onStreamReady={onCameraStreamReady}
           >
             <div className="space-y-2">
               {statusMessage ? (
@@ -138,7 +141,6 @@ export function SessionStage({
           questionText={question?.questionText ?? null}
           speaking={speaking}
           turnId={question?.turnId ?? null}
-          voiceLabel={voiceLabel}
           onAudioPlaybackEnded={onQAAudioPlaybackEnded}
           onAudioPlaybackStarted={onQAAudioPlaybackStarted}
           onSpeakingChange={onInterviewerSpeakingChange}
@@ -147,8 +149,9 @@ export function SessionStage({
               <CameraPanel
                 elapsedSeconds={elapsedSeconds}
                 isRunning={isRunning}
+                cameraPermissionState={cameraPermissionState}
+                cameraStream={cameraStream}
                 onFrameCaptureReady={registerVideoFrameProvider}
-                onStreamReady={onCameraStreamReady}
                 variant="inset"
               >
                 <div />

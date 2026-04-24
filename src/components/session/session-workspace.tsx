@@ -3,6 +3,9 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 
+import { getCoachProfileById, getCoachProfiles, isCoachProfileId } from "@/lib/coach-profiles";
+import { CoachEntryDialog } from "@/components/session/coach-entry-dialog";
+import { CoachSidebarHeader } from "@/components/session/coach-sidebar-header";
 import { HistorySidebar } from "@/components/session/history-sidebar";
 import { LiveAnalysisPanel } from "@/components/session/live-analysis-panel";
 import { QAControlBar } from "@/components/session/qa-control-bar";
@@ -13,14 +16,14 @@ import { useSessionResult } from "@/components/session/session-provider";
 import { primeAudioPlayback } from "@/lib/audio-playback";
 import { TranscriptPanel } from "@/components/session/transcript-panel";
 import { useMockSession } from "@/hooks/useMockSession";
-import { extractDocumentText, getQAVoiceProfiles, getScenarios, uploadSessionReplayMedia } from "@/lib/api";
+import { extractDocumentText, getScenarios, uploadSessionReplayMedia } from "@/lib/api";
 import type {
+  CoachProfileId,
   LanguageOption,
   ScenarioOption,
   ScenarioType,
   TrainingDocumentAsset,
   TrainingMode,
-  VoiceProfile,
 } from "@/types/session";
 
 interface SessionWorkspaceProps {
@@ -28,20 +31,34 @@ interface SessionWorkspaceProps {
   defaultScenario?: ScenarioType;
 }
 
-const fallbackVoiceProfiles: VoiceProfile[] = [
-  {
-    id: "female_professional_01",
-    label: "女声 · 专业",
-    gender: "female",
-    style: "professional",
-  },
-  {
-    id: "male_professional_01",
-    label: "男声 · 专业",
-    gender: "male",
-    style: "professional",
-  },
-];
+function readLanguageFromLocation(defaultLanguage: LanguageOption) {
+  if (typeof window === "undefined") {
+    return defaultLanguage;
+  }
+  const searchParams = new URLSearchParams(window.location.search);
+  const language = searchParams.get("language");
+  return language === "en" || language === "zh" ? language : defaultLanguage;
+}
+
+function readScenarioFromLocation(defaultScenario: ScenarioType) {
+  if (typeof window === "undefined") {
+    return defaultScenario;
+  }
+  const searchParams = new URLSearchParams(window.location.search);
+  const scenario = searchParams.get("scenario");
+  return scenario === "host" || scenario === "guest-sharing" || scenario === "standup"
+    ? scenario
+    : defaultScenario;
+}
+
+function readCoachProfileIdFromLocation() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const searchParams = new URLSearchParams(window.location.search);
+  const coachProfileId = searchParams.get("coach");
+  return isCoachProfileId(coachProfileId) ? coachProfileId : null;
+}
 
 function getReplayCaptureMimeType() {
   if (typeof window === "undefined" || typeof MediaRecorder === "undefined") {
@@ -49,7 +66,7 @@ function getReplayCaptureMimeType() {
   }
 
   const candidates = [
-    "video/webm;codecs=vp9",
+    "video/webm;codecs=vp8,opus",
     "video/webm;codecs=vp8",
     "video/webm",
     "video/mp4",
@@ -70,17 +87,22 @@ export function SessionWorkspace({
   defaultScenario = "host",
 }: SessionWorkspaceProps) {
   const router = useRouter();
-  const { error: sessionError, history, saveResult } = useSessionResult();
+  const { cacheReplayMedia, error: sessionError, history, saveResult } = useSessionResult();
+  const coachProfiles = useMemo(() => getCoachProfiles(), []);
   const [documentAsset, setDocumentAsset] = useState<TrainingDocumentAsset | null>(null);
   const [documentError, setDocumentError] = useState<string | null>(null);
   const [documentLoading, setDocumentLoading] = useState(false);
-  const [language, setLanguage] = useState<LanguageOption>(defaultLanguage);
+  const [language, setLanguage] = useState<LanguageOption>(() => readLanguageFromLocation(defaultLanguage));
   const [historyOpen, setHistoryOpen] = useState(false);
   const [scenarioOpen, setScenarioOpen] = useState(false);
   const [trainingMode, setTrainingMode] = useState<TrainingMode>("free_speech");
   const [qaEnabled, setQAEnabled] = useState(false);
-  const [voiceProfiles, setVoiceProfiles] = useState<VoiceProfile[]>(fallbackVoiceProfiles);
-  const [selectedVoiceProfileId, setSelectedVoiceProfileId] = useState<string>(fallbackVoiceProfiles[0]?.id ?? "female_professional_01");
+  const [cameraPermissionState, setCameraPermissionState] = useState<"idle" | "granted" | "denied">("idle");
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+  const [coachSelectionOpen, setCoachSelectionOpen] = useState(() => readCoachProfileIdFromLocation() === null);
+  const [selectedCoachProfileId, setSelectedCoachProfileId] = useState<CoachProfileId>(
+    () => readCoachProfileIdFromLocation() ?? coachProfiles[0]?.id ?? "",
+  );
   const [scenariosData, setScenariosData] = useState<{
     error: string | null;
     isLoading: boolean;
@@ -90,12 +112,13 @@ export function SessionWorkspace({
     isLoading: true,
     items: [],
   });
-  const [selectedScenarioId, setSelectedScenarioId] = useState<ScenarioType>(defaultScenario);
+  const [selectedScenarioId, setSelectedScenarioId] = useState<ScenarioType>(() => readScenarioFromLocation(defaultScenario));
   const documentInputRef = useRef<HTMLInputElement | null>(null);
   const currentDocumentUrlRef = useRef<string | null>(null);
   const replayCameraStreamRef = useRef<MediaStream | null>(null);
   const replayRecorderRef = useRef<MediaRecorder | null>(null);
   const replayStopTaskRef = useRef<Promise<void> | null>(null);
+  const replayUploadTaskRef = useRef<Promise<void> | null>(null);
   const replayChunksRef = useRef<Blob[]>([]);
   const replaySessionIdRef = useRef<string | null>(null);
   const replayStartAtMsRef = useRef(0);
@@ -104,6 +127,45 @@ export function SessionWorkspace({
   useEffect(() => {
     router.prefetch("/report");
   }, [router]);
+
+  useEffect(() => {
+    let active = true;
+    let ownedStream: MediaStream | null = null;
+
+    async function enableCamera() {
+      if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+        setCameraPermissionState("denied");
+        return;
+      }
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        ownedStream = stream;
+        if (!active) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        replayCameraStreamRef.current = stream;
+        setCameraStream(stream);
+        setCameraPermissionState("granted");
+      } catch {
+        if (!active) {
+          return;
+        }
+        replayCameraStreamRef.current = null;
+        setCameraStream(null);
+        setCameraPermissionState("denied");
+      }
+    }
+
+    void enableCamera();
+
+    return () => {
+      active = false;
+      replayCameraStreamRef.current = null;
+      ownedStream?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -137,32 +199,6 @@ export function SessionWorkspace({
     };
   }, []);
 
-  useEffect(() => {
-    let active = true;
-
-    void getQAVoiceProfiles()
-      .then((profiles) => {
-        if (!active || profiles.length === 0) {
-          return;
-        }
-
-        setVoiceProfiles(profiles);
-        setSelectedVoiceProfileId((current) =>
-          profiles.some((profile) => profile.id === current) ? current : profiles[0]?.id ?? current,
-        );
-      })
-      .catch(() => {
-        if (!active) {
-          return;
-        }
-        setVoiceProfiles(fallbackVoiceProfiles);
-      });
-
-    return () => {
-      active = false;
-    };
-  }, []);
-
   const scenarios = scenariosData.items;
   const scenarioId = useMemo(() => {
     if (scenarios.length === 0) {
@@ -172,9 +208,22 @@ export function SessionWorkspace({
     return scenarios.some((item) => item.id === selectedScenarioId) ? selectedScenarioId : scenarios[0].id;
   }, [scenarios, selectedScenarioId]);
 
+  useEffect(() => {
+    if (typeof window === "undefined" || !selectedCoachProfileId || coachSelectionOpen) {
+      return;
+    }
+
+    const url = new URL(window.location.href);
+    url.searchParams.set("coach", selectedCoachProfileId);
+    url.searchParams.set("scenario", scenarioId);
+    url.searchParams.set("language", language);
+    window.history.replaceState(window.history.state, "", `${url.pathname}?${url.searchParams.toString()}`);
+  }, [coachSelectionOpen, language, scenarioId, selectedCoachProfileId]);
+
   const session = useMockSession({
     scenarioId,
     language,
+    coachProfileId: selectedCoachProfileId,
     trainingMode,
     documentName: documentAsset?.name ?? null,
     documentText: documentAsset?.extractedText ?? documentAsset?.markdownSource ?? null,
@@ -207,6 +256,7 @@ export function SessionWorkspace({
     notifyQAAudioPlaybackStarted,
     selectVoiceProfile,
     setInterviewerSpeaking,
+    silenceInterviewer,
     startQA,
     stopQA,
     updateQAPrewarmContext,
@@ -252,7 +302,7 @@ export function SessionWorkspace({
       replayMimeTypeRef.current = "";
       replayStartAtMsRef.current = 0;
 
-      if (!shouldUpload || !activeSessionId || chunks.length === 0) {
+      if (!activeSessionId || chunks.length === 0) {
         return;
       }
 
@@ -261,15 +311,34 @@ export function SessionWorkspace({
         return;
       }
 
+      cacheReplayMedia(
+        activeSessionId,
+        blob,
+        mimeType.startsWith("audio/") ? "audio" : "video",
+        durationMs,
+      );
+
+      if (!shouldUpload) {
+        return;
+      }
+
       const file = new File([blob], buildReplayFilename(mimeType), { type: mimeType });
-      await uploadSessionReplayMedia(activeSessionId, file, durationMs).catch(() => undefined);
+      const uploadTask = uploadSessionReplayMedia(activeSessionId, file, durationMs)
+        .then(() => undefined)
+        .catch(() => undefined)
+        .finally(() => {
+          if (replayUploadTaskRef.current === uploadTask) {
+            replayUploadTaskRef.current = null;
+          }
+        });
+      replayUploadTaskRef.current = uploadTask;
     })();
 
     replayStopTaskRef.current = task;
     await task.finally(() => {
       replayStopTaskRef.current = null;
     });
-  }, []);
+  }, [cacheReplayMedia]);
 
   const startReplayCapture = useCallback((activeSessionId: string) => {
     if (replayRecorderRef.current || replayStopTaskRef.current || !replayCameraStreamRef.current) {
@@ -280,10 +349,10 @@ export function SessionWorkspace({
     }
 
     const cameraStream = replayCameraStreamRef.current;
-    if (!cameraStream || cameraStream.getVideoTracks().length === 0 || !audioCaptureStream) {
+    if (!cameraStream || cameraStream.getVideoTracks().length === 0) {
       return;
     }
-    const audioTracks = audioCaptureStream.getAudioTracks();
+    const audioTracks = audioCaptureStream?.getAudioTracks() ?? [];
     if (audioTracks.length === 0) {
       return;
     }
@@ -308,16 +377,9 @@ export function SessionWorkspace({
         replayChunksRef.current.push(event.data);
       }
     };
-    recorder.start(1000);
+    recorder.start();
     replayRecorderRef.current = recorder;
   }, [audioCaptureStream]);
-
-  const handleCameraStreamReady = useCallback((stream: MediaStream | null) => {
-    replayCameraStreamRef.current = stream;
-    if (stream && isRunning && sessionId && audioCaptureStream) {
-      startReplayCapture(sessionId);
-    }
-  }, [audioCaptureStream, isRunning, sessionId, startReplayCapture]);
 
   const closeHistory = () => setHistoryOpen(false);
   const controlsDisabled = isLoading;
@@ -342,10 +404,10 @@ export function SessionWorkspace({
   }, []);
 
   useEffect(() => {
-    if (isRunning && sessionId && audioCaptureStream) {
+    if (cameraStream && isRunning && sessionId) {
       startReplayCapture(sessionId);
     }
-  }, [audioCaptureStream, isRunning, sessionId, startReplayCapture]);
+  }, [audioCaptureStream, cameraStream, isRunning, sessionId, startReplayCapture]);
 
   useEffect(() => () => {
     void stopReplayCapture({ upload: false });
@@ -385,10 +447,13 @@ export function SessionWorkspace({
     setQAEnabled(true);
   };
 
-  const handleVoiceProfileChange = (voiceProfileId: string) => {
-    setSelectedVoiceProfileId(voiceProfileId);
+  const handleCoachProfileChange = (coachProfileId: string) => {
+    if (qaEnabled) {
+      return;
+    }
+    setSelectedCoachProfileId(coachProfileId);
     if (sessionId) {
-      selectVoiceProfile(voiceProfileId);
+      selectVoiceProfile(coachProfileId);
     }
   };
 
@@ -507,19 +572,34 @@ export function SessionWorkspace({
 
   const finishSession = () => {
     const finishedSessionId = sessionId;
+    const finishingCoachProfileId = selectedCoachProfileId;
     const { active, committed } = flushTranscript();
     const nextTranscript = active ? [...committed, active] : committed;
-    const uploadPromise = stopReplayCapture({
+    const replayCapturePromise = stopReplayCapture({
       sessionId: finishedSessionId,
       upload: !!finishedSessionId,
     });
+    const reportHref = `/report?sessionId=${finishedSessionId ?? ""}&scenario=${scenarioId}&language=${language}&coach=${finishingCoachProfileId}`;
 
+    silenceInterviewer();
+    if (qaState.enabled) {
+      stopQA();
+      setQAEnabled(false);
+    }
     primeAudioPlayback();
-    void saveResult({ scenarioId, language }, nextTranscript, finishedSessionId).catch(() => undefined);
-    router.push("/report");
+    void saveResult(
+      { scenarioId, language, coachProfileId: finishingCoachProfileId },
+      nextTranscript,
+      finishedSessionId,
+    ).catch(() => undefined);
+
+    void replayCapturePromise
+      .catch(() => undefined)
+      .finally(() => {
+        router.push(reportHref);
+      });
 
     window.setTimeout(() => {
-      void uploadPromise.catch(() => undefined);
       void finish().catch(() => undefined);
     }, 0);
   };
@@ -534,11 +614,11 @@ export function SessionWorkspace({
     void reset().catch(() => undefined);
   };
 
-  const activeVoiceProfileId = qaState.voiceProfileId ?? selectedVoiceProfileId;
-  const activeVoiceProfile = voiceProfiles.find((profile) => profile.id === activeVoiceProfileId) ?? voiceProfiles[0] ?? null;
-  const avatarSrc = activeVoiceProfile?.gender === "male"
-    ? "/avatars/interviewer-male.svg"
-    : "/avatars/interviewer-female.svg";
+  const activeCoachProfileId = qaState.enabled
+    ? (qaState.voiceProfileId ?? selectedCoachProfileId)
+    : selectedCoachProfileId;
+  const activeCoachProfile = getCoachProfileById(activeCoachProfileId) ?? coachProfiles[0] ?? null;
+  const avatarSrc = activeCoachProfile?.avatarSrc ?? "/avatars/interviewer-female.svg";
   const displayedQuestion = qaQuestion ?? (qaState.currentQuestion
     ? {
         turnId: qaState.currentTurnId ?? "qa-current",
@@ -569,7 +649,7 @@ export function SessionWorkspace({
   const launchQA = () => {
     startQA({
       trainingMode,
-      voiceProfileId: activeVoiceProfileId,
+      voiceProfileId: selectedCoachProfileId,
       documentName: documentAsset?.name ?? null,
       documentText: documentAsset?.extractedText ?? documentAsset?.markdownSource ?? null,
       manualText: null,
@@ -631,18 +711,17 @@ export function SessionWorkspace({
             onScenarioChange={setSelectedScenarioId}
             onScenarioToggle={() => setScenarioOpen((value) => !value)}
             onTrainingModeChange={handleTrainingModeChange}
-            onVoiceProfileChange={handleVoiceProfileChange}
             qaEnabled={qaEnabled}
             scenario={scenarioId}
             scenarioOpen={scenarioOpen}
-            selectedVoiceProfileId={activeVoiceProfileId}
             scenarios={scenarios}
             trainingMode={trainingMode}
-            voiceProfiles={voiceProfiles}
           />
           <div className="min-h-0 flex-1">
             <SessionStage
               avatarSrc={avatarSrc}
+              cameraPermissionState={cameraPermissionState}
+              cameraStream={cameraStream}
               controls={
                 <SessionControls
                   disabled={controlsDisabled}
@@ -664,12 +743,10 @@ export function SessionWorkspace({
               qaEnabled={qaEnabled}
               question={displayedQuestion}
               registerVideoFrameProvider={registerVideoFrameProvider}
-              onCameraStreamReady={handleCameraStreamReady}
               sessionId={sessionId}
               speaking={interviewerSpeaking}
               statusMessage={statusMessage}
               trainingMode={trainingMode}
-              voiceLabel={activeVoiceProfile?.label ?? null}
               onQAAudioPlaybackEnded={notifyQAAudioPlaybackEnded}
               onQAAudioPlaybackStarted={notifyQAAudioPlaybackStarted}
               onDocumentPick={openDocumentPicker}
@@ -701,7 +778,16 @@ export function SessionWorkspace({
           ) : null}
         </section>
 
-        <aside className="flex min-h-0 flex-col gap-3 pt-[52px]">
+        <aside className="flex min-h-0 flex-col gap-3">
+          <div className="flex-none">
+            <CoachSidebarHeader
+              coachLocked={qaEnabled}
+              coachProfile={activeCoachProfile}
+              coachProfiles={coachProfiles}
+              isRunning={isRunning}
+              onCoachProfileChange={handleCoachProfileChange}
+            />
+          </div>
           <div className="min-h-0 flex-[0.7]">
             <TranscriptPanel activeTranscript={activeTranscript} transcript={transcript} />
           </div>
@@ -713,6 +799,15 @@ export function SessionWorkspace({
           </div>
         </aside>
       </div>
+
+      {coachSelectionOpen ? (
+        <CoachEntryDialog
+          coachProfiles={coachProfiles}
+          selectedCoachProfileId={selectedCoachProfileId}
+          onSelect={(coachProfileId) => setSelectedCoachProfileId(coachProfileId)}
+          onConfirm={() => setCoachSelectionOpen(false)}
+        />
+      ) : null}
     </main>
   );
 }

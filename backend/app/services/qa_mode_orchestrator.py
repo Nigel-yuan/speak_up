@@ -61,7 +61,7 @@ class QASessionState:
     language: LanguageOption
     enabled: bool = False
     training_mode: TrainingMode = "free_speech"
-    voice_profile_id: str = "female_professional_01"
+    voice_profile_id: str = "duojiong_he"
     document_name: str | None = None
     document_text: str | None = None
     manual_text: str | None = None
@@ -110,11 +110,19 @@ class QAModeOrchestrator:
             int(os.getenv("QA_MAX_FOLLOW_UPS_PER_QUESTION", os.getenv("QA_MAX_ROUNDS_PER_QUESTION", "3"))),
         )
 
-    def register_session(self, session_id: str, scenario_id: ScenarioType, language: LanguageOption) -> None:
+    def register_session(
+        self,
+        session_id: str,
+        scenario_id: ScenarioType,
+        language: LanguageOption,
+        voice_profile_id: str | None = None,
+    ) -> None:
+        resolved_voice_profile_id = self.voice_profile_service.get(voice_profile_id).profile.id
         self.sessions[session_id] = QASessionState(
             session_id=session_id,
             scenario_id=scenario_id,
             language=language,
+            voice_profile_id=resolved_voice_profile_id,
             max_question_topics=self.max_question_topics,
             max_follow_ups_per_question=self.max_follow_ups_per_question,
         )

@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
@@ -12,6 +13,7 @@ import { ReportPendingState } from "@/components/report/report-pending-state";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useSessionResult } from "@/components/session/session-provider";
+import { getCoachProfileById, getDefaultCoachProfileId, isCoachProfileId } from "@/lib/coach-profiles";
 import { getSessionReport } from "@/lib/api";
 import type { SessionReport } from "@/types/report";
 import type { LanguageOption, ScenarioType, SessionSetup } from "@/types/session";
@@ -37,6 +39,7 @@ export default function ReportPage() {
     sessionId: string | null;
     scenarioId: ScenarioType | null;
     language: LanguageOption | null;
+    coachProfileId: string | null;
   }>(() => {
     if (typeof window === "undefined") {
       return {
@@ -44,15 +47,18 @@ export default function ReportPage() {
         sessionId: null,
         scenarioId: null,
         language: null,
+        coachProfileId: null,
       };
     }
 
     const searchParams = new URLSearchParams(window.location.search);
+    const coachProfileId = searchParams.get("coach");
     return {
       ready: true,
       sessionId: searchParams.get("sessionId"),
       scenarioId: parseScenario(searchParams.get("scenario")),
       language: parseLanguage(searchParams.get("language")),
+      coachProfileId: isCoachProfileId(coachProfileId) ? coachProfileId : null,
     };
   }, []);
 
@@ -64,12 +70,19 @@ export default function ReportPage() {
     return {
       scenarioId: routeState.scenarioId,
       language: routeState.language,
+      coachProfileId: routeState.coachProfileId ?? getDefaultCoachProfileId(),
     };
-  }, [routeState.language, routeState.scenarioId]);
+  }, [routeState.coachProfileId, routeState.language, routeState.scenarioId]);
   const activeSetup = setup ?? fallbackSetup;
+  const activeCoachProfileId =
+    activeSetup?.coachProfileId ??
+    routeState.coachProfileId ??
+    activeReport?.coachProfileId ??
+    getDefaultCoachProfileId();
+  const activeCoachProfile = getCoachProfileById(activeCoachProfileId);
   const activeReplaySessionId = replaySessionId ?? routeState.sessionId;
   const replayHref = activeReplaySessionId && activeSetup
-    ? `/session/${activeReplaySessionId}/replay`
+    ? `/session/${activeReplaySessionId}/replay?coach=${activeCoachProfileId}`
     : null;
 
   useEffect(() => {
@@ -166,6 +179,27 @@ export default function ReportPage() {
           <p className="mt-3 text-sm text-violet-600">
             训练报告 · {activeSetup.language === "zh" ? "中文" : "English"}
           </p>
+          {activeCoachProfile ? (
+            <div className="mt-4 inline-flex items-center gap-3 rounded-[24px] border border-violet-100 bg-white/90 px-4 py-3 shadow-[0_14px_34px_rgba(15,23,42,0.06)]">
+              <div className="relative h-14 w-14 overflow-hidden rounded-[18px] border border-violet-100 bg-violet-50">
+                <Image
+                  src={activeCoachProfile.avatarSrc}
+                  alt={activeCoachProfile.name}
+                  fill
+                  className="object-cover"
+                  sizes="56px"
+                />
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-violet-500">AI Coach</p>
+                <p className="mt-1 text-base font-semibold text-slate-950">
+                  {activeCoachProfile.name}
+                  <span className="ml-2 text-sm font-medium text-slate-500">{activeCoachProfile.personaType}</span>
+                </p>
+                <p className="mt-1 text-sm text-slate-500">{activeCoachProfile.slogan}</p>
+              </div>
+            </div>
+          ) : null}
         </div>
         <div className="flex flex-wrap gap-3">
           {replayHref ? (
@@ -185,7 +219,11 @@ export default function ReportPage() {
           </Button>
           <Button
             className="bg-violet-600 text-white shadow-[0_12px_24px_rgba(109,40,217,0.22)] hover:bg-violet-500"
-            onClick={() => router.push(`/session?scenario=${activeSetup.scenarioId}&language=${activeSetup.language}`)}
+            onClick={() =>
+              router.push(
+                `/session?scenario=${activeSetup.scenarioId}&language=${activeSetup.language}&coach=${activeCoachProfileId}`,
+              )
+            }
           >
             再来一轮
           </Button>

@@ -4,7 +4,6 @@ import type {
   ScenarioType,
   TrainingDocumentAsset,
   TrainingMode,
-  VoiceProfile,
 } from "@/types/session";
 
 const languageOptions = [
@@ -23,14 +22,11 @@ interface SessionToolbarProps {
   onScenarioChange: (scenario: ScenarioType) => void;
   onScenarioToggle: () => void;
   onTrainingModeChange: (mode: TrainingMode) => void;
-  onVoiceProfileChange: (voiceProfileId: string) => void;
   qaEnabled: boolean;
   scenario: ScenarioType;
   scenarioOpen: boolean;
-  selectedVoiceProfileId: string | null;
   scenarios: ScenarioOption[];
   trainingMode: TrainingMode;
-  voiceProfiles: VoiceProfile[];
 }
 
 export function SessionToolbar({
@@ -44,14 +40,11 @@ export function SessionToolbar({
   onScenarioChange,
   onScenarioToggle,
   onTrainingModeChange,
-  onVoiceProfileChange,
   qaEnabled,
   scenario,
   scenarioOpen,
-  selectedVoiceProfileId,
   scenarios,
   trainingMode,
-  voiceProfiles,
 }: SessionToolbarProps) {
   const currentScenario = scenarios.find((item) => item.id === scenario) ?? null;
 
@@ -106,29 +99,6 @@ export function SessionToolbar({
       >
         {qaEnabled ? "退出问答模式" : "进入问答模式"}
       </button>
-      {qaEnabled && voiceProfiles.length > 0 ? (
-        <div className="flex flex-wrap items-center gap-2 rounded-[22px] border border-slate-200 bg-white px-3 py-2 shadow-[0_10px_25px_rgba(15,23,42,0.06)]">
-          <span className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Voice</span>
-          {voiceProfiles.map((profile) => {
-            const active = selectedVoiceProfileId === profile.id;
-
-            return (
-              <button
-                key={profile.id}
-                type="button"
-                onClick={() => onVoiceProfileChange(profile.id)}
-                className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
-                  active
-                    ? "bg-sky-100 text-sky-800"
-                    : "bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-900"
-                }`}
-              >
-                {profile.label}
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
       {trainingMode === "document_speech" ? (
         <>
           <button

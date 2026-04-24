@@ -2,6 +2,7 @@ export type ScenarioType = "host" | "guest-sharing" | "standup";
 export type LanguageOption = "zh" | "en";
 export type TrainingMode = "free_speech" | "document_speech";
 export type TrainingDocumentKind = "pdf" | "md";
+export type CoachProfileId = string;
 export type VoiceGender = "male" | "female";
 export type VoiceStyle = "professional" | "gentle" | "firm" | "encouraging";
 export type QAPhase =
@@ -62,6 +63,7 @@ export interface CoachPanelState {
 export interface SessionSetup {
   scenarioId: ScenarioType;
   language: LanguageOption;
+  coachProfileId: CoachProfileId;
   trainingMode?: TrainingMode;
   documentName?: string | null;
   documentText?: string | null;
@@ -155,6 +157,7 @@ export interface SessionReplay {
   sessionId: string;
   scenarioId: ScenarioType;
   language: LanguageOption;
+  coachProfileId: CoachProfileId | null;
   mediaUrl: string | null;
   mediaType: "audio" | "video" | null;
   durationMs: number;

@@ -329,6 +329,8 @@ export function useMockSession(setup: SessionSetup) {
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const monitorGainNodeRef = useRef<GainNode | null>(null);
+  const replayAudioDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const replayInputGainNodeRef = useRef<GainNode | null>(null);
   const pendingChunkTasksRef = useRef<Set<Promise<void>>>(new Set());
   const sessionStartedAtRef = useRef<number | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -343,6 +345,7 @@ export function useMockSession(setup: SessionSetup) {
   const [qaAudioUrl, setQAAudioUrl] = useState<string | null>(null);
   const [qaAudioAutoPlay, setQAAudioAutoPlay] = useState(false);
   const qaAudioContextRef = useRef<AudioContext | null>(null);
+  const qaAudioSourceNodesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const qaAudioPlaybackTimeRef = useRef(0);
   const qaAudioTurnRef = useRef<string | null>(null);
   const qaAudioEndTimerRef = useRef<number | null>(null);
@@ -371,11 +374,11 @@ export function useMockSession(setup: SessionSetup) {
   }, []);
 
   const ensureQAAudioContext = useCallback(() => {
-    let audioContext = qaAudioContextRef.current;
+    let audioContext = audioContextRef.current ?? qaAudioContextRef.current;
     if (!audioContext || audioContext.state === "closed") {
       audioContext = new AudioContext({ sampleRate: 24000 });
-      qaAudioContextRef.current = audioContext;
     }
+    qaAudioContextRef.current = audioContext;
 
     void audioContext.resume().catch(() => {
       qaAudioShouldFallbackToFileRef.current = true;
@@ -389,6 +392,19 @@ export function useMockSession(setup: SessionSetup) {
       window.clearTimeout(qaAudioEndTimerRef.current);
       qaAudioEndTimerRef.current = null;
     }
+    for (const source of qaAudioSourceNodesRef.current) {
+      try {
+        source.stop();
+      } catch {
+        // ignore stop races while tearing down playback
+      }
+      try {
+        source.disconnect();
+      } catch {
+        // ignore disconnect races while tearing down playback
+      }
+    }
+    qaAudioSourceNodesRef.current.clear();
     qaAudioTurnRef.current = null;
     qaAudioPlaybackTimeRef.current = 0;
     qaAudioLiveChunkCountRef.current = 0;
@@ -402,7 +418,7 @@ export function useMockSession(setup: SessionSetup) {
     stopQAAudioPlayback();
     const audioContext = qaAudioContextRef.current;
     qaAudioContextRef.current = null;
-    if (audioContext && audioContext.state !== "closed") {
+    if (audioContext && audioContext !== audioContextRef.current && audioContext.state !== "closed") {
       void audioContext.close();
     }
   }, [stopQAAudioPlayback]);
@@ -493,6 +509,18 @@ export function useMockSession(setup: SessionSetup) {
     const source = audioContext.createBufferSource();
     source.buffer = buffer;
     source.connect(audioContext.destination);
+    if (replayAudioDestinationRef.current) {
+      source.connect(replayAudioDestinationRef.current);
+    }
+    qaAudioSourceNodesRef.current.add(source);
+    source.onended = () => {
+      qaAudioSourceNodesRef.current.delete(source);
+      try {
+        source.disconnect();
+      } catch {
+        // ignore disconnect races after playback completion
+      }
+    };
 
     const startAt = Math.max(audioContext.currentTime + 0.02, qaAudioPlaybackTimeRef.current);
     source.start(startAt);
@@ -540,11 +568,15 @@ export function useMockSession(setup: SessionSetup) {
     const workletNode = workletNodeRef.current;
     const sourceNode = sourceNodeRef.current;
     const monitorGainNode = monitorGainNodeRef.current;
+    const replayAudioDestination = replayAudioDestinationRef.current;
+    const replayInputGainNode = replayInputGainNodeRef.current;
     const audioContext = audioContextRef.current;
 
     workletNodeRef.current = null;
     sourceNodeRef.current = null;
     monitorGainNodeRef.current = null;
+    replayAudioDestinationRef.current = null;
+    replayInputGainNodeRef.current = null;
     audioContextRef.current = null;
 
     workletNode?.port.close();
@@ -563,6 +595,18 @@ export function useMockSession(setup: SessionSetup) {
 
     try {
       monitorGainNode?.disconnect();
+    } catch {
+      // ignore disconnect errors during teardown
+    }
+
+    try {
+      replayInputGainNode?.disconnect();
+    } catch {
+      // ignore disconnect errors during teardown
+    }
+
+    try {
+      replayAudioDestination?.disconnect();
     } catch {
       // ignore disconnect errors during teardown
     }
@@ -699,11 +743,11 @@ export function useMockSession(setup: SessionSetup) {
   const startAudioCapture = useCallback(async () => {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     audioStreamRef.current = stream;
-    setAudioCaptureStream(stream);
 
     try {
       const audioContext = new AudioContext({ sampleRate: PCM_SAMPLE_RATE });
       audioContextRef.current = audioContext;
+      qaAudioContextRef.current = audioContext;
 
       await audioContext.audioWorklet.addModule(PCM_WORKLET_MODULE_PATH);
 
@@ -719,7 +763,10 @@ export function useMockSession(setup: SessionSetup) {
         },
       });
       const monitorGainNode = audioContext.createGain();
+      const replayAudioDestination = audioContext.createMediaStreamDestination();
+      const replayInputGainNode = audioContext.createGain();
       monitorGainNode.gain.value = 0;
+      replayInputGainNode.gain.value = 1;
 
       workletNode.port.onmessage = (event: MessageEvent<Float32Array | ArrayBuffer>) => {
         const value = event.data;
@@ -728,12 +775,17 @@ export function useMockSession(setup: SessionSetup) {
       };
 
       sourceNode.connect(workletNode);
+      sourceNode.connect(replayInputGainNode);
       workletNode.connect(monitorGainNode);
+      replayInputGainNode.connect(replayAudioDestination);
       monitorGainNode.connect(audioContext.destination);
 
       sourceNodeRef.current = sourceNode;
       workletNodeRef.current = workletNode;
       monitorGainNodeRef.current = monitorGainNode;
+      replayAudioDestinationRef.current = replayAudioDestination;
+      replayInputGainNodeRef.current = replayInputGainNode;
+      setAudioCaptureStream(replayAudioDestination.stream);
 
       await audioContext.resume();
     } catch (error) {
@@ -768,7 +820,6 @@ export function useMockSession(setup: SessionSetup) {
     await discardAudioCapture();
     clearSocket();
     clearSessionView();
-    ensureQAAudioContext();
     setSessionState({
       error: null,
       isConnecting: true,
@@ -778,7 +829,7 @@ export function useMockSession(setup: SessionSetup) {
     });
 
     try {
-      const session = await startRealtimeSession(setup.scenarioId, setup.language);
+      const session = await startRealtimeSession(setup.scenarioId, setup.language, setup.coachProfileId);
       const socket = new WebSocket(session.websocketUrl);
       socketRef.current = socket;
 
@@ -959,6 +1010,7 @@ export function useMockSession(setup: SessionSetup) {
     sessionState.isFinalizing,
     setup.documentName,
     setup.documentText,
+    setup.coachProfileId,
     setup.language,
     setup.manualText,
     setup.scenarioId,
@@ -966,7 +1018,6 @@ export function useMockSession(setup: SessionSetup) {
     startQAAudioStream,
     appendQAAudioStreamDelta,
     finishQAAudioStream,
-    ensureQAAudioContext,
     stopQAAudioPlayback,
     startAudioCapture,
   ]);
@@ -1094,6 +1145,12 @@ export function useMockSession(setup: SessionSetup) {
     setInterviewerSpeakingState(value);
   }, []);
 
+  const silenceInterviewer = useCallback(() => {
+    stopQAAudioPlayback();
+    setQAAudioUrl(null);
+    setQAAudioAutoPlay(false);
+  }, [stopQAAudioPlayback]);
+
   const statusText = useMemo(() => {
     if (sessionState.error) {
       return sessionState.error;
@@ -1146,6 +1203,7 @@ export function useMockSession(setup: SessionSetup) {
     notifyQAAudioPlaybackEnded,
     notifyQAAudioPlaybackStarted,
     setInterviewerSpeaking,
+    silenceInterviewer,
     startQA,
     updateQAPrewarmContext,
     stopQA,

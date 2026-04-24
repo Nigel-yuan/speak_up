@@ -52,6 +52,7 @@ class SessionRecord:
     session_id: str
     scenario_id: ScenarioType
     language: LanguageOption
+    coach_profile_id: str | None = None
     status: SessionStatus = "created"
     transcript_count: int = 0
     audio_chunk_count: int = 0
@@ -71,6 +72,7 @@ class SessionRecord:
             sessionId=self.session_id,
             scenarioId=self.scenario_id,
             language=self.language,
+            coachProfileId=self.coach_profile_id,
             status=self.status,
             transcriptCount=self.transcript_count,
             audioChunkCount=self.audio_chunk_count,
@@ -160,15 +162,27 @@ class SessionManager:
             signal_service=self.report_job_service.signal_service,
         )
 
-    def create_session(self, scenario_id: ScenarioType, language: LanguageOption) -> SessionRecord:
+    def create_session(
+        self,
+        scenario_id: ScenarioType,
+        language: LanguageOption,
+        coach_profile_id: str | None,
+    ) -> SessionRecord:
         session_id = uuid4().hex
+        resolved_coach_profile_id = self.qa_mode_orchestrator.voice_profile_service.get(coach_profile_id).profile.id
         session = SessionRecord(
             session_id=session_id,
             scenario_id=scenario_id,
             language=language,
+            coach_profile_id=resolved_coach_profile_id,
         )
         self.coach_panel_service.get_or_create_panel(session_id, language)
-        self.qa_mode_orchestrator.register_session(session_id, scenario_id, language)
+        self.qa_mode_orchestrator.register_session(
+            session_id,
+            scenario_id,
+            language,
+            resolved_coach_profile_id,
+        )
         self.sessions[session_id] = session
         return session
 
@@ -368,6 +382,8 @@ class SessionManager:
                 document_text=message.document_text,
                 manual_text=message.manual_text,
             )
+            session.coach_profile_id = self.qa_mode_orchestrator.get_voice_profile_config(session.session_id).profile.id
+            await self.report_job_service.update_coach_profile(session.session_id, session.coach_profile_id)
             for event in events:
                 await self._broadcast_runtime_event(session, event)
             try:
@@ -423,6 +439,8 @@ class SessionManager:
                 session_id=session.session_id,
                 voice_profile_id=message.voice_profile_id,
             )
+            session.coach_profile_id = self.qa_mode_orchestrator.get_voice_profile_config(session.session_id).profile.id
+            await self.report_job_service.update_coach_profile(session.session_id, session.coach_profile_id)
             for event in events:
                 await self._broadcast_runtime_event(session, event)
             if self.qa_mode_orchestrator.is_enabled(session.session_id):

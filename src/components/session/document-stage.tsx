@@ -10,12 +10,13 @@ import type { TrainingDocumentAsset } from "@/types/session";
 
 interface DocumentStageProps {
   children: React.ReactNode;
+  cameraPermissionState: "idle" | "granted" | "denied";
+  cameraStream: MediaStream | null;
   documentAsset: TrainingDocumentAsset | null;
   elapsedSeconds: number;
   isRunning: boolean;
   onDocumentPick: () => void;
   onFrameCaptureReady?: (capture: () => string | null) => void;
-  onStreamReady?: (stream: MediaStream | null) => void;
   sessionId: string | null;
   statusMessage: string | null;
 }
@@ -307,12 +308,13 @@ function PdfPreview({ objectUrl }: { objectUrl: string }) {
 
 export function DocumentStage({
   children,
+  cameraPermissionState,
+  cameraStream,
   documentAsset,
   elapsedSeconds,
   isRunning,
   onDocumentPick,
   onFrameCaptureReady,
-  onStreamReady,
   sessionId,
   statusMessage,
 }: DocumentStageProps) {
@@ -347,8 +349,9 @@ export function DocumentStage({
             <CameraPanel
               elapsedSeconds={elapsedSeconds}
               isRunning={isRunning}
+              cameraPermissionState={cameraPermissionState}
+              cameraStream={cameraStream}
               onFrameCaptureReady={onFrameCaptureReady}
-              onStreamReady={onStreamReady}
               variant="inset"
             >
             <div />

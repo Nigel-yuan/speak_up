@@ -48,7 +48,6 @@ interface QAAvatarPanelProps {
   questionText: string | null;
   speaking: boolean;
   turnId: string | null;
-  voiceLabel: string | null;
   onAudioPlaybackEnded?: (turnId: string) => void;
   onAudioPlaybackStarted?: (turnId: string) => void;
   onSpeakingChange: (speaking: boolean) => void;
@@ -65,7 +64,6 @@ export function QAAvatarPanel({
   questionText,
   speaking,
   turnId,
-  voiceLabel,
   onAudioPlaybackEnded,
   onAudioPlaybackStarted,
   onSpeakingChange,
@@ -127,8 +125,8 @@ export function QAAvatarPanel({
 
       <div className="relative flex items-center justify-between gap-3 border-b border-white/10 px-5 py-4">
         <div>
-          <p className="text-xs uppercase tracking-[0.24em] text-slate-400">AI Interviewer</p>
-          <h3 className="mt-1 text-lg font-semibold text-white">{voiceLabel ?? "问答模式"}</h3>
+          <p className="text-xs uppercase tracking-[0.24em] text-slate-400">Q&A Mode</p>
+          <h3 className="mt-1 text-lg font-semibold text-white">AI 问答</h3>
         </div>
         <Badge tone={getPhaseTone(phase)}>{getPhaseLabel(phase)}</Badge>
       </div>
@@ -169,7 +167,7 @@ export function QAAvatarPanel({
             <div className="mx-auto aspect-[4/5] max-h-[236px] overflow-hidden rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,#334155_0%,#111827_100%)]">
               <Image
                 src={avatarSrc}
-                alt="AI interviewer avatar"
+                alt="AI coach avatar"
                 width={640}
                 height={800}
                 className="h-full w-full object-cover"

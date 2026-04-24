@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from collections import defaultdict
@@ -27,6 +28,7 @@ from app.services.report_domain import (
     top_dimension_label,
 )
 from app.services.report_signal_service import ReportSignalBundle
+from app.services.voice_profile_service import VoiceProfileService
 
 
 SCENARIO_LABELS: dict[ScenarioType, str] = {
@@ -34,6 +36,8 @@ SCENARIO_LABELS: dict[ScenarioType, str] = {
     "guest-sharing": "主题分享场景",
     "standup": "脱口秀 / 即兴表达场景",
 }
+
+logger = logging.getLogger("speak_up.session")
 
 
 class ReportBrainService:
@@ -55,6 +59,7 @@ class ReportBrainService:
         self.fallback_model = fallback_model or os.getenv("ALIYUN_REPORT_BRAIN_FALLBACK_MODEL", "qwen-max-latest")
         self.window_timeout_seconds = max(10.0, float(os.getenv("ALIYUN_REPORT_WINDOW_TIMEOUT_SECONDS", "30")))
         self.final_timeout_seconds = max(15.0, float(os.getenv("ALIYUN_REPORT_BRAIN_TIMEOUT_SECONDS", "45")))
+        self.voice_profile_service = VoiceProfileService()
 
     @property
     def is_configured(self) -> bool:
@@ -159,13 +164,25 @@ class ReportBrainService:
         session_id: str,
         scenario_id: ScenarioType,
         language: LanguageOption,
+        coach_profile_id: str | None,
         window_packs: list[ReportWindowPack],
         tail_bundle: ReportSignalBundle | None,
     ) -> SessionReport:
+        coach_profile = self.voice_profile_service.get(coach_profile_id)
+        logger.info(
+            "report.final.style_applied session=%s source=fallback requested_coach=%s resolved_coach=%s coach_name=%s persona=%s instruction=%s",
+            session_id,
+            coach_profile_id,
+            coach_profile.profile.id,
+            coach_profile.coach_name,
+            coach_profile.persona_type,
+            coach_profile.report_instruction_zh[:120],
+        )
         return self._fallback_final_report(
             session_id=session_id,
             scenario_id=scenario_id,
             language=language,
+            coach_profile_id=coach_profile_id,
             window_packs=window_packs,
             tail_bundle=tail_bundle,
         )
@@ -176,6 +193,7 @@ class ReportBrainService:
         session_id: str,
         scenario_id: ScenarioType,
         language: LanguageOption,
+        coach_profile_id: str | None,
         window_packs: list[ReportWindowPack],
         tail_bundle: ReportSignalBundle | None,
     ) -> SessionReport:
@@ -183,11 +201,33 @@ class ReportBrainService:
             session_id=session_id,
             scenario_id=scenario_id,
             language=language,
+            coach_profile_id=coach_profile_id,
             window_packs=window_packs,
             tail_bundle=tail_bundle,
         )
         if not self.is_configured:
+            coach_profile = self.voice_profile_service.get(coach_profile_id)
+            logger.info(
+                "report.final.style_applied session=%s source=fallback reason=brain_unconfigured requested_coach=%s resolved_coach=%s coach_name=%s persona=%s instruction=%s",
+                session_id,
+                coach_profile_id,
+                coach_profile.profile.id,
+                coach_profile.coach_name,
+                coach_profile.persona_type,
+                coach_profile.report_instruction_zh[:120],
+            )
             return fallback
+
+        coach_profile = self.voice_profile_service.get(coach_profile_id)
+        logger.info(
+            "report.final.style_applied session=%s source=llm requested_coach=%s resolved_coach=%s coach_name=%s persona=%s instruction=%s",
+            session_id,
+            coach_profile_id,
+            coach_profile.profile.id,
+            coach_profile.coach_name,
+            coach_profile.persona_type,
+            coach_profile.report_instruction_zh[:120],
+        )
 
         system_prompt = (
             "你是 Speak Up 的赛后报告生成助手。"
@@ -197,6 +237,8 @@ class ReportBrainService:
             "不要描述系统检测过程、模型能力、覆盖率、置信度、维度完整性、报告生成流程。"
             "不要使用内部维度 id 或机制术语，例如 rhythm、vocal_tone、content_quality、expression_structure、body、facial_expression、维度反馈。"
             "如果要给建议，必须改写成用户能直接理解的自然表达。"
+            f"当前报告要采用“{coach_profile.coach_name}”这位教练的人设口吻，但仍然必须保持专业、克制、面向用户。"
+            f"{coach_profile.report_instruction_zh}"
             "必须输出 JSON。"
         )
         user_prompt = json.dumps(
@@ -238,6 +280,17 @@ class ReportBrainService:
 
         for model_name in (self.final_model, self.fallback_model):
             try:
+                logger.info(
+                    "report.final.model_attempt session=%s model=%s coach=%s persona=%s windows=%s tail_chunks=%s tail_questions=%s tail_signals=%s",
+                    session_id,
+                    model_name,
+                    coach_profile.coach_name,
+                    coach_profile.persona_type,
+                    len(window_packs),
+                    len(tail_bundle.transcript_chunks) if tail_bundle else 0,
+                    len(tail_bundle.qa_questions) if tail_bundle else 0,
+                    len(tail_bundle.coach_signals) if tail_bundle else 0,
+                )
                 content = await self._chat(
                     model=model_name,
                     timeout_seconds=self.final_timeout_seconds,
@@ -249,16 +302,47 @@ class ReportBrainService:
                 )
                 parsed = self._parse_json(content)
                 if not parsed:
+                    logger.warning(
+                        "report.final.model_invalid_json session=%s model=%s coach=%s persona=%s",
+                        session_id,
+                        model_name,
+                        coach_profile.coach_name,
+                        coach_profile.persona_type,
+                    )
                     continue
+                logger.info(
+                    "report.final.model_success session=%s model=%s coach=%s persona=%s",
+                    session_id,
+                    model_name,
+                    coach_profile.coach_name,
+                    coach_profile.persona_type,
+                )
                 return self._final_report_from_payload(
                     payload=parsed,
                     session_id=session_id,
+                    coach_profile_id=coach_profile.profile.id,
                     scenario_id=scenario_id,
                     language=language,
                     fallback=fallback,
                 )
-            except Exception:
+            except Exception as error:
+                logger.warning(
+                    "report.final.model_failed session=%s model=%s coach=%s persona=%s error=%s",
+                    session_id,
+                    model_name,
+                    coach_profile.coach_name,
+                    coach_profile.persona_type,
+                    error,
+                )
                 continue
+        logger.warning(
+            "report.final.fallback session=%s reason=all_models_failed requested_coach=%s resolved_coach=%s coach_name=%s persona=%s",
+            session_id,
+            coach_profile_id,
+            coach_profile.profile.id,
+            coach_profile.coach_name,
+            coach_profile.persona_type,
+        )
         return fallback
 
     async def _chat(
@@ -355,6 +439,7 @@ class ReportBrainService:
         *,
         payload: dict,
         session_id: str,
+        coach_profile_id: str | None,
         scenario_id: ScenarioType,
         language: LanguageOption,
         fallback: SessionReport,
@@ -377,6 +462,7 @@ class ReportBrainService:
         )
         return SessionReport(
             sessionId=session_id,
+            coachProfileId=coach_profile_id,
             status="ready",
             overallScore=overall_score,
             headline=headline,
@@ -424,6 +510,7 @@ class ReportBrainService:
         session_id: str,
         scenario_id: ScenarioType,
         language: LanguageOption,
+        coach_profile_id: str | None,
         window_packs: list[ReportWindowPack],
         tail_bundle: ReportSignalBundle | None,
     ) -> SessionReport:
@@ -487,6 +574,7 @@ class ReportBrainService:
         weakest_dimension = weakness_ranked[0]
         return SessionReport(
             sessionId=session_id,
+            coachProfileId=coach_profile_id,
             status="ready",
             overallScore=overall_score,
             headline=self._build_headline(language, overall_score, best_dimension.label),

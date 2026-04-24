@@ -151,6 +151,7 @@ class ReplayService:
             sessionId=session_id,
             scenarioId=state.scenarioId,
             language=state.language,
+            coachProfileId=state.coachProfileId,
             mediaUrl=f"/api/session/{session_id}/replay/media" if media is not None else None,
             mediaType=media.media_type if media is not None else None,
             durationMs=duration_ms,

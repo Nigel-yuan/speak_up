@@ -6,15 +6,24 @@ import { getHistory, getSessionReport, triggerSessionReportGeneration } from "@/
 import type { HistoricalSessionSummary, ReportProgressState, ReportProgressStep, SessionReport } from "@/types/report";
 import type { SessionSetup, TranscriptChunk } from "@/types/session";
 
+interface CachedReplayMedia {
+  sessionId: string;
+  url: string;
+  mediaType: "audio" | "video";
+  durationMs: number;
+}
+
 interface SessionResultContextValue {
   setup: SessionSetup | null;
   report: SessionReport | null;
   replaySessionId: string | null;
+  replayMedia: CachedReplayMedia | null;
   transcript: TranscriptChunk[];
   history: HistoricalSessionSummary[];
   historyLoading: boolean;
   error: string | null;
   refreshHistory: () => Promise<void>;
+  cacheReplayMedia: (sessionId: string, blob: Blob, mediaType: "audio" | "video", durationMs: number) => void;
   saveResult: (setup: SessionSetup, transcript: TranscriptChunk[], sessionId: string | null) => Promise<void>;
 }
 
@@ -57,11 +66,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [setup, setSetup] = useState<SessionSetup | null>(null);
   const [report, setReport] = useState<SessionReport | null>(null);
   const [replaySessionId, setReplaySessionId] = useState<string | null>(null);
+  const [replayMedia, setReplayMedia] = useState<CachedReplayMedia | null>(null);
   const [transcript, setTranscript] = useState<TranscriptChunk[]>([]);
   const [history, setHistory] = useState<HistoricalSessionSummary[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const reportPollingTimerRef = useRef<number | null>(null);
+  const replayMediaUrlRef = useRef<string | null>(null);
 
   const clearReportPolling = useCallback(() => {
     if (reportPollingTimerRef.current !== null) {
@@ -81,8 +92,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     }),
   }), []);
 
-  const buildProcessingReport = useCallback((sessionId: string): SessionReport => ({
+  const buildProcessingReport = useCallback((sessionId: string, coachProfileId: string | null): SessionReport => ({
     sessionId,
+    coachProfileId,
     status: "processing",
     overallScore: 0,
     headline: "AI 分析中...",
@@ -101,8 +113,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     progress: buildProcessingProgress(),
   }), [buildProcessingProgress]);
 
-  const buildFailedReport = useCallback((sessionId: string, message: string): SessionReport => ({
+  const buildFailedReport = useCallback((sessionId: string, coachProfileId: string | null, message: string): SessionReport => ({
     sessionId,
+    coachProfileId,
     status: "failed",
     overallScore: 0,
     headline: "报告生成失败",
@@ -151,6 +164,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => clearReportPolling, [clearReportPolling]);
 
+  useEffect(() => () => {
+    if (replayMediaUrlRef.current) {
+      URL.revokeObjectURL(replayMediaUrlRef.current);
+      replayMediaUrlRef.current = null;
+    }
+  }, []);
+
   const applyReport = useCallback((nextReport: SessionReport) => {
     startTransition(() => {
       setReport(nextReport);
@@ -175,13 +195,33 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     }, 1200);
   }, [applyReport, clearReportPolling]);
 
+  const cacheReplayMedia = useCallback((
+    sessionId: string,
+    blob: Blob,
+    mediaType: "audio" | "video",
+    durationMs: number,
+  ) => {
+    if (replayMediaUrlRef.current) {
+      URL.revokeObjectURL(replayMediaUrlRef.current);
+    }
+
+    const objectUrl = URL.createObjectURL(blob);
+    replayMediaUrlRef.current = objectUrl;
+    setReplayMedia({
+      sessionId,
+      url: objectUrl,
+      mediaType,
+      durationMs: Math.max(0, Math.round(durationMs)),
+    });
+  }, []);
+
   const saveResult = useCallback(async (nextSetup: SessionSetup, nextTranscript: TranscriptChunk[], sessionId: string | null) => {
     setSetup(nextSetup);
     setTranscript(nextTranscript);
     setReplaySessionId(sessionId);
 
     if (sessionId) {
-      setReport(buildProcessingReport(sessionId));
+      setReport(buildProcessingReport(sessionId, nextSetup.coachProfileId));
       setError(null);
       startReportPolling(sessionId);
       void triggerSessionReportGeneration(sessionId)
@@ -203,7 +243,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     }
 
     const message = "未获取到有效 sessionId，无法生成报告。";
-    setReport(buildFailedReport("missing-session-id", message));
+    setReport(buildFailedReport("missing-session-id", nextSetup.coachProfileId, message));
     setError(message);
   }, [applyReport, buildFailedReport, buildProcessingReport, clearReportPolling, startReportPolling]);
 
@@ -212,14 +252,16 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       setup,
       report,
       replaySessionId,
+      replayMedia,
       transcript,
       history,
       historyLoading,
       error,
       refreshHistory,
+      cacheReplayMedia,
       saveResult,
     }),
-    [error, history, historyLoading, refreshHistory, report, saveResult, setup, replaySessionId, transcript],
+    [cacheReplayMedia, error, history, historyLoading, refreshHistory, replayMedia, report, saveResult, setup, replaySessionId, transcript],
   );
 
   return <SessionResultContext.Provider value={value}>{children}</SessionResultContext.Provider>;

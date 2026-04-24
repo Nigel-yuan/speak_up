@@ -33,7 +33,14 @@ class ReportRepository:
     def _final_report_path(self, session_id: str) -> Path:
         return self._session_dir(session_id) / "final_report.json"
 
-    async def init_session(self, *, session_id: str, scenario_id: ScenarioType, language: LanguageOption) -> None:
+    async def init_session(
+        self,
+        *,
+        session_id: str,
+        scenario_id: ScenarioType,
+        language: LanguageOption,
+        coach_profile_id: str | None = None,
+    ) -> None:
         async with self._locks[session_id]:
             session_dir = self._session_dir(session_id)
             session_dir.mkdir(parents=True, exist_ok=True)
@@ -43,6 +50,7 @@ class ReportRepository:
                     sessionId=session_id,
                     scenarioId=scenario_id,
                     language=language,
+                    coachProfileId=coach_profile_id,
                 )
                 self._write_json(self._state_path(session_id), state.model_dump())
 

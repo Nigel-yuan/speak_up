@@ -20,7 +20,7 @@
 
 - 报告页右上角提供“回放复盘”按钮
 - 路由为 `src/app/session/[sessionId]/replay/page.tsx`
-- 从回放页返回报告时，会带回 `sessionId / scenario / language`，避免误跳首页
+- 从回放页返回报告时，会带回 `sessionId / scenario / coach`，避免误跳首页或丢失教练身份
 
 ### 页面结构
 
@@ -110,6 +110,7 @@ interface SessionReplay {
   sessionId: string;
   scenarioId: ScenarioType;
   language: LanguageOption;
+  coachProfileId: CoachProfileId | null;
   mediaUrl: string | null;
   mediaType: "audio" | "video" | null;
   durationMs: number;

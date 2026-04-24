@@ -22,7 +22,6 @@ interface SessionStageProps {
   qaEnabled: boolean;
   question: QAQuestion | null;
   registerVideoFrameProvider: (capture: () => string | null) => void;
-  sessionId: string | null;
   speaking: boolean;
   statusMessage: string | null;
   trainingMode: TrainingMode;
@@ -48,7 +47,6 @@ export function SessionStage({
   qaEnabled,
   question,
   registerVideoFrameProvider,
-  sessionId,
   speaking,
   statusMessage,
   trainingMode,
@@ -68,7 +66,6 @@ export function SessionStage({
           cameraStream={cameraStream}
           onDocumentPick={onDocumentPick}
           onFrameCaptureReady={registerVideoFrameProvider}
-          sessionId={sessionId}
           statusMessage={statusMessage}
         >
           {controls}
@@ -88,11 +85,6 @@ export function SessionStage({
           {statusMessage ? (
             <div className="rounded-2xl bg-black/50 px-4 py-2 text-sm font-medium text-white backdrop-blur">
               {statusMessage}
-            </div>
-          ) : null}
-          {sessionId ? (
-            <div className="rounded-2xl bg-black/40 px-4 py-2 text-xs font-medium text-slate-200 backdrop-blur">
-              Session ID: {sessionId}
             </div>
           ) : null}
           {controls}
@@ -118,11 +110,6 @@ export function SessionStage({
               {statusMessage ? (
                 <div className="rounded-2xl bg-black/50 px-4 py-2 text-sm font-medium text-white backdrop-blur">
                   {statusMessage}
-                </div>
-              ) : null}
-              {sessionId ? (
-                <div className="rounded-2xl bg-black/40 px-4 py-2 text-xs font-medium text-slate-200 backdrop-blur">
-                  Session ID: {sessionId}
                 </div>
               ) : null}
             </div>

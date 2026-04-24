@@ -63,10 +63,12 @@ export function CoachEntryDialog({
           </div>
 
           <div className="bg-[radial-gradient(circle_at_top,rgba(139,92,246,0.18),transparent_48%),linear-gradient(180deg,#faf5ff_0%,#ffffff_100%)] p-8">
-            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-violet-500">AI Coach</p>
-            <h2 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">先选一位陪你训练的教练</h2>
-            <p className="mt-4 text-sm leading-7 text-slate-500">
-              选完之后再进入主页面。本轮问答、训练报告和回放复盘，都会延续这位教练的人设和表达风格。
+            <h2 className="max-w-[360px] text-[2rem] font-semibold leading-tight tracking-tight text-slate-950">
+              阁下谈吐非凡，准备选
+              <span className="block">哪位“嘴替”陪你练练？</span>
+            </h2>
+            <p className="mt-4 max-w-[360px] text-sm leading-7 text-slate-500">
+              是想在炅炅的酒窝里溺水，还是在星姐的毒舌下求生？请开始你的翻牌表演！
             </p>
 
             {activeCoach ? (
@@ -91,7 +93,7 @@ export function CoachEntryDialog({
                   onClick={onConfirm}
                   className="mt-6 inline-flex w-full items-center justify-center rounded-full bg-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-[0_12px_28px_rgba(109,40,217,0.24)] transition hover:bg-violet-500"
                 >
-                  进入训练
+                  选定离手！
                 </button>
               </div>
             ) : null}

@@ -16,17 +16,12 @@ import { useSessionResult } from "@/components/session/session-provider";
 import { getCoachProfileById, getDefaultCoachProfileId, isCoachProfileId } from "@/lib/coach-profiles";
 import { getSessionReport } from "@/lib/api";
 import type { SessionReport } from "@/types/report";
-import type { LanguageOption, ScenarioType, SessionSetup } from "@/types/session";
+import type { ScenarioType, SessionSetup } from "@/types/session";
 
-const VALID_SCENARIOS = new Set<ScenarioType>(["host", "guest-sharing", "standup"]);
-const VALID_LANGUAGES = new Set<LanguageOption>(["zh", "en"]);
+const VALID_SCENARIOS = new Set<ScenarioType>(["general", "host", "guest-sharing", "standup"]);
 
 function parseScenario(value: string | null): ScenarioType | null {
   return value && VALID_SCENARIOS.has(value as ScenarioType) ? (value as ScenarioType) : null;
-}
-
-function parseLanguage(value: string | null): LanguageOption | null {
-  return value && VALID_LANGUAGES.has(value as LanguageOption) ? (value as LanguageOption) : null;
 }
 
 export default function ReportPage() {
@@ -38,7 +33,6 @@ export default function ReportPage() {
     ready: boolean;
     sessionId: string | null;
     scenarioId: ScenarioType | null;
-    language: LanguageOption | null;
     coachProfileId: string | null;
   }>(() => {
     if (typeof window === "undefined") {
@@ -46,7 +40,6 @@ export default function ReportPage() {
         ready: false,
         sessionId: null,
         scenarioId: null,
-        language: null,
         coachProfileId: null,
       };
     }
@@ -57,22 +50,18 @@ export default function ReportPage() {
       ready: true,
       sessionId: searchParams.get("sessionId"),
       scenarioId: parseScenario(searchParams.get("scenario")),
-      language: parseLanguage(searchParams.get("language")),
       coachProfileId: isCoachProfileId(coachProfileId) ? coachProfileId : null,
     };
   }, []);
 
   const activeReport = report ?? fallbackReport;
-  const fallbackSetup = useMemo<SessionSetup | null>(() => {
-    if (!routeState.scenarioId || !routeState.language) {
-      return null;
-    }
+  const fallbackSetup = useMemo<SessionSetup>(() => {
     return {
-      scenarioId: routeState.scenarioId,
-      language: routeState.language,
+      scenarioId: routeState.scenarioId ?? "general",
+      language: "zh",
       coachProfileId: routeState.coachProfileId ?? getDefaultCoachProfileId(),
     };
-  }, [routeState.coachProfileId, routeState.language, routeState.scenarioId]);
+  }, [routeState.coachProfileId, routeState.scenarioId]);
   const activeSetup = setup ?? fallbackSetup;
   const activeCoachProfileId =
     activeSetup?.coachProfileId ??
@@ -81,7 +70,7 @@ export default function ReportPage() {
     getDefaultCoachProfileId();
   const activeCoachProfile = getCoachProfileById(activeCoachProfileId);
   const activeReplaySessionId = replaySessionId ?? routeState.sessionId;
-  const replayHref = activeReplaySessionId && activeSetup
+  const replayHref = activeReplaySessionId
     ? `/session/${activeReplaySessionId}/replay?coach=${activeCoachProfileId}`
     : null;
 
@@ -156,7 +145,7 @@ export default function ReportPage() {
     );
   }
 
-  if (!activeReport || !activeSetup) {
+  if (!activeReport) {
     return (
       <main className="mx-auto min-h-screen w-full max-w-7xl px-6 py-10 md:px-10">
         <Card className="px-6 py-5">
@@ -176,9 +165,7 @@ export default function ReportPage() {
           <Link href="/" className="text-sm font-semibold text-slate-500">
             ← 返回首页
           </Link>
-          <p className="mt-3 text-sm text-violet-600">
-            训练报告 · {activeSetup.language === "zh" ? "中文" : "English"}
-          </p>
+          <p className="mt-3 text-sm text-violet-600">训练报告</p>
           {activeCoachProfile ? (
             <div className="mt-4 inline-flex items-center gap-3 rounded-[24px] border border-violet-100 bg-white/90 px-4 py-3 shadow-[0_14px_34px_rgba(15,23,42,0.06)]">
               <div className="relative h-14 w-14 overflow-hidden rounded-[18px] border border-violet-100 bg-violet-50">
@@ -221,7 +208,7 @@ export default function ReportPage() {
             className="bg-violet-600 text-white shadow-[0_12px_24px_rgba(109,40,217,0.22)] hover:bg-violet-500"
             onClick={() =>
               router.push(
-                `/session?scenario=${activeSetup.scenarioId}&language=${activeSetup.language}&coach=${activeCoachProfileId}`,
+                `/session?scenario=${activeSetup.scenarioId}&coach=${activeCoachProfileId}`,
               )
             }
           >

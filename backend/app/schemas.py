@@ -3,14 +3,12 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-ScenarioType = Literal["host", "guest-sharing", "standup"]
+ScenarioType = Literal["general", "host", "guest-sharing", "standup"]
 LanguageOption = Literal["zh", "en"]
 TrainingMode = Literal["free_speech", "document_speech"]
 DocumentKind = Literal["pdf", "md"]
 DocumentPreviewKind = Literal["none", "pdf"]
 DocumentPreviewStatus = Literal["ready", "unavailable"]
-InsightTone = Literal["positive", "neutral", "warning"]
-InsightSource = Literal["system", "omni-coach", "manual"]
 CoachDimensionId = Literal["body_expression", "voice_pacing", "content_expression"]
 CoachDisplayStatus = Literal["doing_well", "stable", "adjust_now", "analyzing"]
 CoachDimensionSource = Literal["system", "omni-coach", "speech-rule"]
@@ -81,16 +79,6 @@ ClientMessageType = Literal[
 ]
 
 
-class ScenarioOption(BaseModel):
-    id: ScenarioType
-    title: str
-    subtitle: str
-    description: str
-    goals: list[str]
-    audience: str
-    accentColor: str
-
-
 class TranscriptChunk(BaseModel):
     id: str
     speaker: TranscriptSpeaker
@@ -98,14 +86,6 @@ class TranscriptChunk(BaseModel):
     timestampLabel: str
     startMs: int = 0
     endMs: int = 0
-
-
-class LiveInsight(BaseModel):
-    id: str
-    title: str
-    detail: str
-    tone: InsightTone
-    source: InsightSource = "system"
 
 
 class CoachSummary(BaseModel):
@@ -217,19 +197,6 @@ class SuggestionItem(BaseModel):
     detail: str
 
 
-class MetricDelta(BaseModel):
-    metric: str
-    change: int
-
-
-class HistoricalSessionSummary(BaseModel):
-    id: str
-    label: str
-    scenarioId: ScenarioType
-    overallScore: int
-    summary: str
-    deltas: list[MetricDelta] = Field(default_factory=list)
-
 class ReportEvidenceRef(BaseModel):
     timestampMs: int = 0
     quote: str | None = None
@@ -331,12 +298,6 @@ class SessionReport(BaseModel):
     generatedAt: str = ""
     sectionStatus: ReportSectionStatus = Field(default_factory=ReportSectionStatus)
     progress: ReportProgressState = Field(default_factory=ReportProgressState)
-
-
-class SessionStreamFrame(BaseModel):
-    second: int
-    transcript: TranscriptChunk
-    insight: LiveInsight
 
 
 class StartSessionRequest(BaseModel):

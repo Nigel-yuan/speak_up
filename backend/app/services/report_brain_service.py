@@ -32,7 +32,8 @@ from app.services.voice_profile_service import VoiceProfileService
 
 
 SCENARIO_LABELS: dict[ScenarioType, str] = {
-    "host": "主持场景",
+    "general": "通用表达训练",
+    "host": "通用表达训练",
     "guest-sharing": "主题分享场景",
     "standup": "脱口秀 / 即兴表达场景",
 }

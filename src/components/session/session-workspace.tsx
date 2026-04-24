@@ -6,7 +6,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } f
 import { getCoachProfileById, getCoachProfiles, isCoachProfileId } from "@/lib/coach-profiles";
 import { CoachEntryDialog } from "@/components/session/coach-entry-dialog";
 import { CoachSidebarHeader } from "@/components/session/coach-sidebar-header";
-import { HistorySidebar } from "@/components/session/history-sidebar";
 import { LiveAnalysisPanel } from "@/components/session/live-analysis-panel";
 import { QAControlBar } from "@/components/session/qa-control-bar";
 import { SessionStage } from "@/components/session/session-stage";
@@ -16,28 +15,16 @@ import { useSessionResult } from "@/components/session/session-provider";
 import { primeAudioPlayback } from "@/lib/audio-playback";
 import { TranscriptPanel } from "@/components/session/transcript-panel";
 import { useMockSession } from "@/hooks/useMockSession";
-import { extractDocumentText, getScenarios, uploadSessionReplayMedia } from "@/lib/api";
+import { extractDocumentText, uploadSessionReplayMedia } from "@/lib/api";
 import type {
   CoachProfileId,
-  LanguageOption,
-  ScenarioOption,
   ScenarioType,
   TrainingDocumentAsset,
   TrainingMode,
 } from "@/types/session";
 
 interface SessionWorkspaceProps {
-  defaultLanguage?: LanguageOption;
   defaultScenario?: ScenarioType;
-}
-
-function readLanguageFromLocation(defaultLanguage: LanguageOption) {
-  if (typeof window === "undefined") {
-    return defaultLanguage;
-  }
-  const searchParams = new URLSearchParams(window.location.search);
-  const language = searchParams.get("language");
-  return language === "en" || language === "zh" ? language : defaultLanguage;
 }
 
 function readScenarioFromLocation(defaultScenario: ScenarioType) {
@@ -46,7 +33,7 @@ function readScenarioFromLocation(defaultScenario: ScenarioType) {
   }
   const searchParams = new URLSearchParams(window.location.search);
   const scenario = searchParams.get("scenario");
-  return scenario === "host" || scenario === "guest-sharing" || scenario === "standup"
+  return scenario === "general" || scenario === "host" || scenario === "guest-sharing" || scenario === "standup"
     ? scenario
     : defaultScenario;
 }
@@ -83,36 +70,23 @@ function buildReplayFilename(mimeType: string) {
 }
 
 export function SessionWorkspace({
-  defaultLanguage = "zh",
-  defaultScenario = "host",
+  defaultScenario = "general",
 }: SessionWorkspaceProps) {
   const router = useRouter();
-  const { cacheReplayMedia, error: sessionError, history, saveResult } = useSessionResult();
+  const { cacheReplayMedia, error: sessionError, saveResult } = useSessionResult();
   const coachProfiles = useMemo(() => getCoachProfiles(), []);
   const [documentAsset, setDocumentAsset] = useState<TrainingDocumentAsset | null>(null);
   const [documentError, setDocumentError] = useState<string | null>(null);
   const [documentLoading, setDocumentLoading] = useState(false);
-  const [language, setLanguage] = useState<LanguageOption>(() => readLanguageFromLocation(defaultLanguage));
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [scenarioOpen, setScenarioOpen] = useState(false);
+  const language = "zh";
   const [trainingMode, setTrainingMode] = useState<TrainingMode>("free_speech");
   const [qaEnabled, setQAEnabled] = useState(false);
   const [cameraPermissionState, setCameraPermissionState] = useState<"idle" | "granted" | "denied">("idle");
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
-  const [coachSelectionOpen, setCoachSelectionOpen] = useState(() => readCoachProfileIdFromLocation() === null);
-  const [selectedCoachProfileId, setSelectedCoachProfileId] = useState<CoachProfileId>(
-    () => readCoachProfileIdFromLocation() ?? coachProfiles[0]?.id ?? "",
-  );
-  const [scenariosData, setScenariosData] = useState<{
-    error: string | null;
-    isLoading: boolean;
-    items: ScenarioOption[];
-  }>({
-    error: null,
-    isLoading: true,
-    items: [],
-  });
-  const [selectedScenarioId, setSelectedScenarioId] = useState<ScenarioType>(() => readScenarioFromLocation(defaultScenario));
+  const [coachSelectionOpen, setCoachSelectionOpen] = useState(false);
+  const [routeParamsReady, setRouteParamsReady] = useState(false);
+  const [selectedCoachProfileId, setSelectedCoachProfileId] = useState<CoachProfileId>(coachProfiles[0]?.id ?? "");
+  const [scenarioId, setScenarioId] = useState<ScenarioType>(defaultScenario);
   const documentInputRef = useRef<HTMLInputElement | null>(null);
   const currentDocumentUrlRef = useRef<string | null>(null);
   const replayCameraStreamRef = useRef<MediaStream | null>(null);
@@ -168,57 +142,28 @@ export function SessionWorkspace({
   }, []);
 
   useEffect(() => {
-    let active = true;
-
-    void getScenarios()
-      .then((nextScenarios) => {
-        if (!active) {
-          return;
-        }
-
-        setScenariosData({
-          error: null,
-          isLoading: false,
-          items: nextScenarios,
-        });
-      })
-      .catch((loadError) => {
-        if (!active) {
-          return;
-        }
-
-        setScenariosData({
-          error: loadError instanceof Error ? `场景加载失败：${loadError.message}` : "场景加载失败",
-          isLoading: false,
-          items: [],
-        });
-      });
-
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  const scenarios = scenariosData.items;
-  const scenarioId = useMemo(() => {
-    if (scenarios.length === 0) {
-      return selectedScenarioId;
+    const routeCoachProfileId = readCoachProfileIdFromLocation();
+    setScenarioId(readScenarioFromLocation(defaultScenario));
+    if (routeCoachProfileId) {
+      setSelectedCoachProfileId(routeCoachProfileId);
+      setCoachSelectionOpen(false);
+    } else {
+      setCoachSelectionOpen(true);
     }
-
-    return scenarios.some((item) => item.id === selectedScenarioId) ? selectedScenarioId : scenarios[0].id;
-  }, [scenarios, selectedScenarioId]);
+    setRouteParamsReady(true);
+  }, [defaultScenario]);
 
   useEffect(() => {
-    if (typeof window === "undefined" || !selectedCoachProfileId || coachSelectionOpen) {
+    if (typeof window === "undefined" || !routeParamsReady || !selectedCoachProfileId || coachSelectionOpen) {
       return;
     }
 
     const url = new URL(window.location.href);
     url.searchParams.set("coach", selectedCoachProfileId);
     url.searchParams.set("scenario", scenarioId);
-    url.searchParams.set("language", language);
+    url.searchParams.delete("language");
     window.history.replaceState(window.history.state, "", `${url.pathname}?${url.searchParams.toString()}`);
-  }, [coachSelectionOpen, language, scenarioId, selectedCoachProfileId]);
+  }, [coachSelectionOpen, routeParamsReady, scenarioId, selectedCoachProfileId]);
 
   const session = useMockSession({
     scenarioId,
@@ -239,9 +184,7 @@ export function SessionWorkspace({
     flushTranscript,
     isLoading,
     isRunning,
-    pause,
     registerVideoFrameProvider,
-    reset,
     sessionId,
     start,
     statusText,
@@ -381,18 +324,15 @@ export function SessionWorkspace({
     replayRecorderRef.current = recorder;
   }, [audioCaptureStream]);
 
-  const closeHistory = () => setHistoryOpen(false);
   const controlsDisabled = isLoading;
   const statusMessage = useMemo(
     () =>
       (documentLoading ? "正在抽取文档正文..." : null) ??
       documentError ??
-      scenariosData.error ??
       error ??
       sessionError ??
-      statusText ??
-      (scenariosData.isLoading ? "场景加载中..." : null),
-    [documentError, documentLoading, error, scenariosData.error, scenariosData.isLoading, sessionError, statusText],
+      statusText,
+    [documentError, documentLoading, error, sessionError, statusText],
   );
 
   useEffect(() => {
@@ -579,7 +519,7 @@ export function SessionWorkspace({
       sessionId: finishedSessionId,
       upload: !!finishedSessionId,
     });
-    const reportHref = `/report?sessionId=${finishedSessionId ?? ""}&scenario=${scenarioId}&language=${language}&coach=${finishingCoachProfileId}`;
+    const reportHref = `/report?sessionId=${finishedSessionId ?? ""}&scenario=${scenarioId}&coach=${finishingCoachProfileId}`;
 
     silenceInterviewer();
     if (qaState.enabled) {
@@ -602,16 +542,6 @@ export function SessionWorkspace({
     window.setTimeout(() => {
       void finish().catch(() => undefined);
     }, 0);
-  };
-
-  const pauseSession = () => {
-    void stopReplayCapture({ upload: false }).catch(() => undefined);
-    void pause().catch(() => undefined);
-  };
-
-  const resetSession = () => {
-    void stopReplayCapture({ upload: false }).catch(() => undefined);
-    void reset().catch(() => undefined);
   };
 
   const activeCoachProfileId = qaState.enabled
@@ -667,54 +597,40 @@ export function SessionWorkspace({
           void handleDocumentSelection(event);
         }}
       />
-      {historyOpen ? (
-        <div className="fixed inset-0 z-30 bg-slate-950/18 backdrop-blur-[2px]">
-          <div className="absolute inset-y-0 left-0 w-full max-w-[380px] p-4">
-            <div className="flex h-full flex-col gap-3">
-              <div className="flex items-center justify-between rounded-[24px] bg-white/92 px-4 py-3 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
-                <div>
-                  <p className="text-sm font-semibold text-slate-900">历史演讲</p>
-                  <p className="text-xs text-slate-500">这里可以回看历史记录与历史趋势</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={closeHistory}
-                  className="rounded-full bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-200"
-                >
-                  关闭
-                </button>
-              </div>
-              <div className="min-h-0 flex-1">
-                <HistorySidebar activeScenario={scenarioId} history={history} scenarios={scenarios} />
-              </div>
-            </div>
-          </div>
-          <button
-            type="button"
-            aria-label="关闭历史面板"
-            className="absolute inset-0 -z-10"
-            onClick={closeHistory}
-          />
-        </div>
-      ) : null}
-
       <div className="mx-auto grid h-full max-w-[1720px] gap-4 xl:grid-cols-[minmax(0,1.75fr)_420px]">
         <section className="flex min-h-0 flex-col gap-3">
           <SessionToolbar
             documentAsset={documentAsset}
-            language={language}
+            elapsedSeconds={elapsedSeconds}
+            isRunning={isRunning && !controlsDisabled}
             onDocumentClear={clearDocumentAsset}
             onDocumentPick={openDocumentPicker}
-            onHistoryToggle={() => setHistoryOpen((value) => !value)}
-            onLanguageChange={setLanguage}
             onQAToggle={handleQAToggle}
-            onScenarioChange={setSelectedScenarioId}
-            onScenarioToggle={() => setScenarioOpen((value) => !value)}
             onTrainingModeChange={handleTrainingModeChange}
+            primaryControls={
+              <SessionControls
+                disabled={controlsDisabled}
+                isRunning={isRunning}
+                onFinish={finishSession}
+                onStart={start}
+              />
+            }
+            qaControls={
+              qaEnabled ? (
+                <QAControlBar
+                  disabled={controlsDisabled}
+                  isRunning={isRunning}
+                  phase={qaState.phase}
+                  qaEnabled={qaEnabled}
+                  onStartQA={launchQA}
+                  onStopQA={() => {
+                    setQAEnabled(false);
+                    stopQA();
+                  }}
+                />
+              ) : null
+            }
             qaEnabled={qaEnabled}
-            scenario={scenarioId}
-            scenarioOpen={scenarioOpen}
-            scenarios={scenarios}
             trainingMode={trainingMode}
           />
           <div className="min-h-0 flex-1">
@@ -722,16 +638,7 @@ export function SessionWorkspace({
               avatarSrc={avatarSrc}
               cameraPermissionState={cameraPermissionState}
               cameraStream={cameraStream}
-              controls={
-                <SessionControls
-                  disabled={controlsDisabled}
-                  isRunning={isRunning}
-                  onFinish={finishSession}
-                  onPause={pauseSession}
-                  onReset={resetSession}
-                  onStart={start}
-                />
-              }
+              controls={null}
               documentAsset={documentAsset}
               elapsedSeconds={elapsedSeconds}
               feedback={displayedFeedback}
@@ -743,7 +650,6 @@ export function SessionWorkspace({
               qaEnabled={qaEnabled}
               question={displayedQuestion}
               registerVideoFrameProvider={registerVideoFrameProvider}
-              sessionId={sessionId}
               speaking={interviewerSpeaking}
               statusMessage={statusMessage}
               trainingMode={trainingMode}
@@ -753,29 +659,6 @@ export function SessionWorkspace({
               onInterviewerSpeakingChange={setInterviewerSpeaking}
             />
           </div>
-          {qaEnabled ? (
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <QAControlBar
-                disabled={controlsDisabled}
-                isRunning={isRunning}
-                phase={qaState.phase}
-                qaEnabled={qaEnabled}
-                onStartQA={launchQA}
-                onStopQA={() => {
-                  setQAEnabled(false);
-                  stopQA();
-                }}
-              />
-              <SessionControls
-                disabled={controlsDisabled}
-                isRunning={isRunning}
-                onFinish={finishSession}
-                onPause={pauseSession}
-                onReset={resetSession}
-                onStart={start}
-              />
-            </div>
-          ) : null}
         </section>
 
         <aside className="flex min-h-0 flex-col gap-3">
@@ -792,10 +675,7 @@ export function SessionWorkspace({
             <TranscriptPanel activeTranscript={activeTranscript} transcript={transcript} />
           </div>
           <div className="min-h-0 flex-[1.3]">
-            <LiveAnalysisPanel
-              coachPanel={coachPanel}
-              language={language}
-            />
+            <LiveAnalysisPanel coachPanel={coachPanel} />
           </div>
         </aside>
       </div>

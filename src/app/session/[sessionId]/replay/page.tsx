@@ -115,7 +115,7 @@ function getCoachToneClasses(insight: ReplayCoachInsight, active: boolean) {
 
 function buildReportHref(sessionId: string, replay: SessionReplay) {
   const coachQuery = replay.coachProfileId ? `&coach=${replay.coachProfileId}` : "";
-  return `/report?sessionId=${sessionId}&scenario=${replay.scenarioId}&language=${replay.language}${coachQuery}`;
+  return `/report?sessionId=${sessionId}&scenario=${replay.scenarioId}${coachQuery}`;
 }
 
 function ReplayMediaPlayer({
@@ -316,11 +316,9 @@ export default function SessionReplayPage({ params }: { params: Promise<{ sessio
   const activeCoachProfileId = routeCoachProfileId ?? replay.coachProfileId ?? null;
   const coachProfile = getCoachProfileById(activeCoachProfileId);
   const reportHref = activeCoachProfileId
-    ? `/report?sessionId=${sessionId}&scenario=${replay.scenarioId}&language=${replay.language}&coach=${activeCoachProfileId}`
+    ? `/report?sessionId=${sessionId}&scenario=${replay.scenarioId}&coach=${activeCoachProfileId}`
     : buildReportHref(sessionId, replay);
-  const restartHref = `/session?scenario=${replay.scenarioId}&language=${replay.language}${
-    activeCoachProfileId ? `&coach=${activeCoachProfileId}` : ""
-  }`;
+  const restartHref = `/session?scenario=${replay.scenarioId}${activeCoachProfileId ? `&coach=${activeCoachProfileId}` : ""}`;
 
   return (
     <main className="mx-auto min-h-screen w-full max-w-[1800px] px-4 py-6 md:px-8 xl:px-10">
@@ -332,7 +330,7 @@ export default function SessionReplayPage({ params }: { params: Promise<{ sessio
           <p className="mt-3 text-sm font-semibold text-violet-600">回放复盘</p>
           <h1 className="mt-2 text-3xl font-semibold text-slate-950 xl:text-[2.35rem]">按时间轴回看这次练习</h1>
           <p className="mt-2 max-w-3xl text-sm leading-7 text-slate-500">
-            {replay.language === "zh" ? "中文" : "English"} · {replay.scenarioId} · {timelineItems.length} 个时间点
+            {timelineItems.length} 个时间点
           </p>
           {coachProfile ? (
             <div className="mt-4 inline-flex items-center gap-3 rounded-[24px] border border-violet-100 bg-white/92 px-4 py-3 shadow-[0_14px_34px_rgba(15,23,42,0.06)]">

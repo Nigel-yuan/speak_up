@@ -22,10 +22,10 @@ export function QAControlBar({
   const showPreparing = qaEnabled && phase === "preparing_context";
 
   return (
-    <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-[0_12px_30px_rgba(15,23,42,0.06)]">
+    <div className="flex flex-wrap items-center gap-2 rounded-full border border-slate-200 bg-slate-50 p-1">
       {showStart ? (
         <Button
-          className="bg-slate-950 text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+          className="h-9 bg-slate-950 px-4 py-0 text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
           disabled={disabled || !isRunning}
           onClick={onStartQA}
           type="button"
@@ -36,7 +36,7 @@ export function QAControlBar({
 
       {showPreparing ? (
         <Button
-          className="bg-slate-400 text-white disabled:cursor-wait disabled:opacity-100"
+          className="h-9 bg-slate-400 px-4 py-0 text-white disabled:cursor-wait disabled:opacity-100"
           disabled
           type="button"
         >
@@ -46,7 +46,7 @@ export function QAControlBar({
 
       {qaEnabled ? (
         <Button
-          className="border border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+          className="h-9 border border-slate-200 bg-white px-4 py-0 text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
           disabled={disabled}
           onClick={onStopQA}
           type="button"

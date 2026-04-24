@@ -1,5 +1,3 @@
-import type { ScenarioType } from "./session";
-
 export interface RadarMetric {
   subject: string;
   score: number;
@@ -34,18 +32,6 @@ export interface ReportTopDimensionScore {
   weaknesses: string[];
   subDimensions: ReportSubDimensionScore[];
   evidenceRefs: ReportEvidenceRef[];
-}
-
-export interface HistoricalSessionSummary {
-  id: string;
-  label: string;
-  scenarioId: ScenarioType;
-  overallScore: number;
-  summary: string;
-  deltas: Array<{
-    metric: string;
-    change: number;
-  }>;
 }
 
 export interface ReportProgressStep {

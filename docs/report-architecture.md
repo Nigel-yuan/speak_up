@@ -6,6 +6,8 @@
 
 报告页已经不再依赖按场景返回的静态报告，而是按真实 `sessionId` 生成整场分析。
 
+当前前端不再暴露场景切换入口，新会话默认使用 `general` 通用表达训练。旧的 `host` 场景仍可被后端兼容读取，但报告 prompt 不再把它提示为“主持场景”，避免报告文案被固定到主持话术。
+
 当前实现的目标只有两个：
 
 - 训练过程中持续沉淀可追溯证据
@@ -82,7 +84,7 @@
 - 内容质量 `10`
 - 表达结构 `20`
 
-实现位置见 [report_domain.py](/Users/bytedance/my_project/speak_up/backend/app/services/report_domain.py:6)。
+实现位置见 [report_domain.py](../backend/app/services/report_domain.py)。
 
 ## 5. 模型职责
 
@@ -142,9 +144,9 @@ Live Coach 仍然只负责实时反馈，不负责赛后整场归纳。
 
 ## 9. 关键文件
 
-- [session_manager.py](/Users/bytedance/my_project/speak_up/backend/app/services/session_manager.py)
-- [report_job_service.py](/Users/bytedance/my_project/speak_up/backend/app/services/report_job_service.py)
-- [report_window_builder_service.py](/Users/bytedance/my_project/speak_up/backend/app/services/report_window_builder_service.py)
-- [report_signal_service.py](/Users/bytedance/my_project/speak_up/backend/app/services/report_signal_service.py)
-- [report_brain_service.py](/Users/bytedance/my_project/speak_up/backend/app/services/report_brain_service.py)
-- [session-provider.tsx](/Users/bytedance/my_project/speak_up/src/components/session/session-provider.tsx)
+- [session_manager.py](../backend/app/services/session_manager.py)
+- [report_job_service.py](../backend/app/services/report_job_service.py)
+- [report_window_builder_service.py](../backend/app/services/report_window_builder_service.py)
+- [report_signal_service.py](../backend/app/services/report_signal_service.py)
+- [report_brain_service.py](../backend/app/services/report_brain_service.py)
+- [session-provider.tsx](../src/components/session/session-provider.tsx)

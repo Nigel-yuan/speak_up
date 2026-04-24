@@ -41,6 +41,7 @@ DEFAULT_DIMENSION_WEIGHTS: dict[TopDimensionId, int] = {
 }
 
 SCENARIO_WEIGHT_MAP: dict[ScenarioType, dict[TopDimensionId, int]] = {
+    "general": dict(DEFAULT_DIMENSION_WEIGHTS),
     "host": dict(DEFAULT_DIMENSION_WEIGHTS),
     "guest-sharing": dict(DEFAULT_DIMENSION_WEIGHTS),
     "standup": dict(DEFAULT_DIMENSION_WEIGHTS),
@@ -135,4 +136,4 @@ def sub_dimension_label(sub_dimension_id: str, language: LanguageOption) -> str:
 
 
 def scenario_weights(scenario_id: ScenarioType) -> dict[TopDimensionId, int]:
-    return SCENARIO_WEIGHT_MAP[scenario_id]
+    return SCENARIO_WEIGHT_MAP.get(scenario_id, DEFAULT_DIMENSION_WEIGHTS)

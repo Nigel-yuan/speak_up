@@ -13,7 +13,8 @@ logger = logging.getLogger("speak_up.qa")
 
 
 SCENARIO_LABELS: dict[ScenarioType, str] = {
-    "host": "主持、控场、串联",
+    "general": "通用表达训练",
+    "host": "通用表达训练",
     "guest-sharing": "嘉宾分享、主题演讲、路演",
     "standup": "脱口秀、高密度表达、强节奏输出",
 }
@@ -451,8 +452,9 @@ class AliyunQABrainService:
                 follow_up=False,
             )
 
+        scenario_label = SCENARIO_LABELS.get(scenario_id, "通用表达训练")
         return GeneratedQuestion(
-            question_text=f"如果把这次 {SCENARIO_LABELS[scenario_id]} 的内容收成一句核心表达，你最想让听众记住什么？",
+            question_text=f"如果把这次{scenario_label}的内容收成一句核心表达，你最想让听众记住什么？",
             goal="确认用户的核心结论是否清楚。",
             expected_points=["一句结论", "为什么重要"],
             follow_up=False,

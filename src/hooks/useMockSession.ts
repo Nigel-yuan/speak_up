@@ -1022,24 +1022,6 @@ export function useMockSession(setup: SessionSetup) {
     startAudioCapture,
   ]);
 
-  const pause = useCallback(async () => {
-    clearActiveTranscript();
-    setIsRunning(false);
-    clearMediaTimer();
-    setSessionState((previous) => ({ ...previous, error: null, isFinalizing: true }));
-
-    try {
-      await stopAudioCapture();
-      await waitForPendingChunkTasks();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "暂停会话失败";
-      setSessionState((previous) => ({ ...previous, error: message }));
-      throw error;
-    } finally {
-      setSessionState((previous) => ({ ...previous, isFinalizing: false }));
-    }
-  }, [clearActiveTranscript, clearMediaTimer, stopAudioCapture, waitForPendingChunkTasks]);
-
   const finish = useCallback(async () => {
     clearActiveTranscript();
     setIsRunning(false);
@@ -1061,13 +1043,6 @@ export function useMockSession(setup: SessionSetup) {
       setSessionState((previous) => ({ ...previous, isFinalizing: false }));
     }
   }, [clearActiveTranscript, clearMediaTimer, clearSocket, sessionState.sessionId, stopAudioCapture, waitForPendingChunkTasks]);
-
-  const reset = useCallback(async () => {
-    clearMediaTimer();
-    await discardAudioCapture();
-    clearSocket();
-    clearSessionView();
-  }, [clearMediaTimer, clearSessionView, clearSocket, discardAudioCapture]);
 
   const registerVideoFrameProvider = useCallback((provider: () => string | null) => {
     videoFrameProviderRef.current = provider;
@@ -1164,12 +1139,8 @@ export function useMockSession(setup: SessionSetup) {
       return "正在结束会话...";
     }
 
-    if (sessionState.sessionId) {
-      return `Session: ${sessionState.sessionId}`;
-    }
-
     return null;
-  }, [sessionState.error, sessionState.isConnecting, sessionState.isFinalizing, sessionState.sessionId]);
+  }, [sessionState.error, sessionState.isConnecting, sessionState.isFinalizing]);
 
   useEffect(() => {
     return () => {
@@ -1210,7 +1181,5 @@ export function useMockSession(setup: SessionSetup) {
     selectVoiceProfile,
     registerVideoFrameProvider,
     start,
-    pause,
-    reset,
   };
 }

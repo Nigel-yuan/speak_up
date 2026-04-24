@@ -1,4 +1,4 @@
-import type { HistoricalSessionSummary, SessionReport } from "@/types/report";
+import type { SessionReport } from "@/types/report";
 import type {
   CoachPanelState,
   CoachProfileId,
@@ -9,7 +9,6 @@ import type {
   QAQuestion,
   QAState,
   LanguageOption,
-  ScenarioOption,
   ScenarioType,
   SessionReplay,
   TrainingMode,
@@ -67,27 +66,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function getScenarios() {
-  return request<ScenarioOption[]>("/api/scenarios");
-}
-
-export function getHistory(scenario?: ScenarioType) {
-  const query = scenario ? `?scenario=${scenario}` : "";
-  return request<HistoricalSessionSummary[]>(`/api/history${query}`);
-}
-
-export interface SessionStreamFrame {
-  second: number;
-  transcript: TranscriptChunk;
-  insight: {
-    id: string;
-    title: string;
-    detail: string;
-    tone: "positive" | "neutral" | "warning";
-    source: "system" | "omni-coach" | "manual";
-  };
-}
-
 export interface RealtimeSession {
   sessionId: string;
   scenarioId: ScenarioType;
@@ -126,14 +104,6 @@ export interface RealtimeEvent {
   audioUrl?: string | null;
   durationMs?: number | null;
   voiceProfiles?: VoiceProfile[] | null;
-}
-
-export function getSessionStream(scenario: ScenarioType, language: LanguageOption) {
-  return request<SessionStreamFrame[]>(`/api/session-stream?scenario=${scenario}&language=${language}`);
-}
-
-export function getReport(scenario: ScenarioType) {
-  return request<SessionReport>(`/api/report?scenario=${scenario}`);
 }
 
 export function getSessionReport(sessionId: string) {

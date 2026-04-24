@@ -5,24 +5,18 @@ import type {
   CoachDimensionState,
   CoachDisplayStatus,
   CoachPanelState,
-  LanguageOption,
 } from "@/types/session";
 
-function buildFallbackCoachPanel(language: LanguageOption): CoachPanelState {
-  const isEnglish = language === "en";
-  const summaryTitle = isEnglish ? "Keep speaking while AI updates your coaching" : "继续演讲，AI 正在同步更新反馈";
-  const summaryDetail = isEnglish
-    ? "The panel below will keep updating as your delivery changes."
-    : "下方三项会随着你的声音、画面和内容持续更新。";
+function buildFallbackCoachPanel(): CoachPanelState {
   const analyzingHeadlineMap: Record<CoachDimensionId, string> = {
-    body_expression: isEnglish ? "Updating body delivery" : "正在更新肢体反馈",
-    voice_pacing: isEnglish ? "Updating vocal pacing" : "正在更新语音反馈",
-    content_expression: isEnglish ? "Updating content clarity" : "正在更新内容反馈",
+    body_expression: "正在更新肢体反馈",
+    voice_pacing: "正在更新语音反馈",
+    content_expression: "正在更新内容反馈",
   };
   const analyzingDetailMap: Record<CoachDimensionId, string> = {
-    body_expression: isEnglish ? "Keep your current rhythm" : "保持当前节奏",
-    voice_pacing: isEnglish ? "Keep your current rhythm" : "保持当前节奏",
-    content_expression: isEnglish ? "Keep going and this card will update shortly" : "继续往下讲",
+    body_expression: "保持当前节奏",
+    voice_pacing: "保持当前节奏",
+    content_expression: "继续往下讲",
   };
 
   const buildDimension = (id: CoachDimensionId): CoachDimensionState => ({
@@ -36,8 +30,8 @@ function buildFallbackCoachPanel(language: LanguageOption): CoachPanelState {
 
   return {
     summary: {
-      title: summaryTitle,
-      detail: summaryDetail,
+      title: "继续演讲，AI 正在同步更新反馈",
+      detail: "下方三项会随着你的声音、画面和内容持续更新。",
       sourceDimension: null,
       updatedAtMs: 0,
     },
@@ -47,18 +41,7 @@ function buildFallbackCoachPanel(language: LanguageOption): CoachPanelState {
   };
 }
 
-function getDimensionTitle(id: CoachDimensionId, language: LanguageOption) {
-  if (language === "en") {
-    switch (id) {
-      case "body_expression":
-        return "Body";
-      case "voice_pacing":
-        return "Voice";
-      default:
-        return "Content";
-    }
-  }
-
+function getDimensionTitle(id: CoachDimensionId) {
   switch (id) {
     case "body_expression":
       return "肢体 & 表情";
@@ -69,20 +52,7 @@ function getDimensionTitle(id: CoachDimensionId, language: LanguageOption) {
   }
 }
 
-function getStatusLabel(status: CoachDisplayStatus, language: LanguageOption) {
-  if (language === "en") {
-    switch (status) {
-      case "doing_well":
-        return "Strong";
-      case "stable":
-        return "Okay";
-      case "adjust_now":
-        return "Fix";
-      default:
-        return "Syncing";
-    }
-  }
-
+function getStatusLabel(status: CoachDisplayStatus) {
   switch (status) {
     case "doing_well":
       return "很好";
@@ -132,7 +102,7 @@ function getEnergyColor(status: CoachDisplayStatus) {
   }
 }
 
-function getShortCue(dimension: CoachDimensionState, language: LanguageOption) {
+function getShortCue(dimension: CoachDimensionState) {
   const zhMap: Record<CoachDimensionId, Record<CoachDisplayStatus, string>> = {
     body_expression: {
       doing_well: "继续保持",
@@ -153,40 +123,15 @@ function getShortCue(dimension: CoachDimensionState, language: LanguageOption) {
       analyzing: "继续展开",
     },
   };
-  const enMap: Record<CoachDimensionId, Record<CoachDisplayStatus, string>> = {
-    body_expression: {
-      doing_well: "Keep it",
-      stable: "Stay open",
-      adjust_now: "Reset pose",
-      analyzing: "Keep going",
-    },
-    voice_pacing: {
-      doing_well: "Nice flow",
-      stable: "Hold pace",
-      adjust_now: "Slow down",
-      analyzing: "Keep going",
-    },
-    content_expression: {
-      doing_well: "Clear line",
-      stable: "Trim it",
-      adjust_now: "Lead first",
-      analyzing: "Build it",
-    },
-  };
-
-  return language === "en"
-    ? enMap[dimension.id][dimension.status]
-    : zhMap[dimension.id][dimension.status];
+  return zhMap[dimension.id][dimension.status];
 }
 
 function truncateForDisplay(
   text: string,
-  language: LanguageOption,
   zhMax: number,
-  enMax: number,
   withEllipsis = true,
 ) {
-  const maxLength = language === "en" ? enMax : zhMax;
+  const maxLength = zhMax;
   const normalized = text.trim();
   if (normalized.length <= maxLength) {
     return normalized;
@@ -213,15 +158,13 @@ function EnergyBar({ status }: { status: CoachDisplayStatus }) {
 
 function DimensionCard({
   dimension,
-  language,
   focused,
 }: {
   dimension: CoachDimensionState;
-  language: LanguageOption;
   focused: boolean;
 }) {
-  const headline = truncateForDisplay(dimension.headline, language, 18, 36);
-  const cue = truncateForDisplay(getShortCue(dimension, language), language, 6, 12);
+  const headline = truncateForDisplay(dimension.headline, 18);
+  const cue = truncateForDisplay(getShortCue(dimension), 6);
 
   return (
     <div
@@ -230,8 +173,8 @@ function DimensionCard({
       }`}
     >
       <div className="mb-1.5 flex items-center justify-between gap-3">
-        <p className="text-sm font-semibold text-slate-900">{getDimensionTitle(dimension.id, language)}</p>
-        <Badge tone={getStatusTone(dimension.status)}>{getStatusLabel(dimension.status, language)}</Badge>
+        <p className="text-sm font-semibold text-slate-900">{getDimensionTitle(dimension.id)}</p>
+        <Badge tone={getStatusTone(dimension.status)}>{getStatusLabel(dimension.status)}</Badge>
       </div>
 
       <EnergyBar status={dimension.status} />
@@ -258,14 +201,12 @@ function DimensionCard({
 
 export function LiveAnalysisPanel({
   coachPanel,
-  language,
 }: {
   coachPanel: CoachPanelState | null;
-  language: LanguageOption;
 }) {
-  const activePanel = coachPanel ?? buildFallbackCoachPanel(language);
-  const summaryTitle = truncateForDisplay(activePanel.summary.title, language, 22, 42);
-  const summaryDetail = truncateForDisplay(activePanel.summary.detail, language, 22, 44, false);
+  const activePanel = coachPanel ?? buildFallbackCoachPanel();
+  const summaryTitle = truncateForDisplay(activePanel.summary.title, 22);
+  const summaryDetail = truncateForDisplay(activePanel.summary.detail, 22, false);
   const dimensions = [
     activePanel.bodyExpression,
     activePanel.voicePacing,
@@ -276,7 +217,7 @@ export function LiveAnalysisPanel({
     <Card className="flex h-full min-h-0 flex-col overflow-hidden rounded-[28px] border-white/60 bg-white/85 p-5 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
       <div className="mb-3 flex items-center justify-between">
         <div>
-          <p className="text-sm text-slate-500">{language === "en" ? "Synchronized analysis" : "同步分析"}</p>
+          <p className="text-sm text-slate-500">同步分析</p>
           <h3 className="text-lg font-semibold text-slate-950">Live Analysis</h3>
         </div>
         <Badge
@@ -288,13 +229,13 @@ export function LiveAnalysisPanel({
               : "stable",
           )}
         >
-          {language === "en" ? "Live" : "实时反馈"}
+          实时反馈
         </Badge>
       </div>
 
       <div className="h-[96px] flex-none overflow-hidden rounded-[26px] bg-slate-950 px-5 py-3 text-white shadow-[0_18px_40px_rgba(15,23,42,0.22)]">
         <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-400">
-          {language === "en" ? "Current focus" : "当前重点"}
+          当前重点
         </p>
         <p
           className="mt-1.5 text-[15px] font-semibold leading-6 text-white"
@@ -326,7 +267,6 @@ export function LiveAnalysisPanel({
           <DimensionCard
             key={dimension.id}
             dimension={dimension}
-            language={language}
             focused={activePanel.summary.sourceDimension === dimension.id}
           />
         ))}

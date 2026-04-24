@@ -1,26 +1,18 @@
 import logging
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.data.history import HISTORICAL_SESSIONS, get_report_by_scenario
-from app.data.scenarios import SCENARIOS
-from app.data.session_stream import get_session_frames
 from app.schemas import (
     ClientMessage,
     DocumentExtractionResponse,
-    HistoricalSessionSummary,
-    LanguageOption,
     RealtimeSession,
     RealtimeSessionResponse,
     ReplayMediaUploadResponse,
     VoiceProfile,
-    ScenarioOption,
-    ScenarioType,
     SessionReport,
     SessionReplay,
-    SessionStreamFrame,
     StartSessionRequest,
 )
 from app.services.document_extraction_service import DocumentExtractionError, document_extraction_service
@@ -59,11 +51,6 @@ app.add_middleware(
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
-
-
-@app.get("/api/scenarios", response_model=list[ScenarioOption])
-def list_scenarios() -> list[ScenarioOption]:
-    return SCENARIOS
 
 
 @app.get("/api/qa/voice-profiles", response_model=list[VoiceProfile])
@@ -126,30 +113,6 @@ async def extract_document_text(file: UploadFile = File(...)) -> DocumentExtract
         charCount=len(extraction.text),
         preview=preview,
     )
-
-
-@app.get("/api/history", response_model=list[HistoricalSessionSummary])
-def list_history(
-    scenario: ScenarioType | None = Query(default=None),
-) -> list[HistoricalSessionSummary]:
-    if scenario is None:
-        return HISTORICAL_SESSIONS
-    return [item for item in HISTORICAL_SESSIONS if item.scenarioId == scenario]
-
-
-@app.get("/api/session-stream", response_model=list[SessionStreamFrame])
-def session_stream(
-    scenario: ScenarioType = Query(default="host"),
-    language: LanguageOption = Query(default="zh"),
-) -> list[SessionStreamFrame]:
-    return get_session_frames(scenario, language)
-
-
-@app.get("/api/report", response_model=SessionReport)
-def get_report(
-    scenario: ScenarioType = Query(default="host"),
-) -> SessionReport:
-    return get_report_by_scenario(scenario)
 
 
 @app.post("/api/session/start", response_model=RealtimeSessionResponse)

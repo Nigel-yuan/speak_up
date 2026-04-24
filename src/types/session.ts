@@ -1,4 +1,4 @@
-export type ScenarioType = "host" | "guest-sharing" | "standup";
+export type ScenarioType = "general" | "host" | "guest-sharing" | "standup";
 export type LanguageOption = "zh" | "en";
 export type TrainingMode = "free_speech" | "document_speech";
 export type TrainingDocumentKind = "pdf" | "md";
@@ -13,16 +13,6 @@ export type QAPhase =
   | "evaluating_answer"
   | "ready_next_turn"
   | "completed";
-
-export interface ScenarioOption {
-  id: ScenarioType;
-  title: string;
-  subtitle: string;
-  description: string;
-  goals: string[];
-  audience: string;
-  accentColor: string;
-}
 
 export interface TranscriptChunk {
   id: string;

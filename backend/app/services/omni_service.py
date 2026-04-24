@@ -30,7 +30,8 @@ LANGUAGE_LABELS: dict[LanguageOption, str] = {
 }
 
 SCENARIO_LABELS: dict[ScenarioType, str] = {
-    "host": "主持人串场或主讲控场",
+    "general": "通用表达训练",
+    "host": "通用表达训练",
     "guest-sharing": "嘉宾分享或主题演讲",
     "standup": "脱口秀或高密度表达",
 }

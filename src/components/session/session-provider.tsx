@@ -2,8 +2,8 @@
 
 import { createContext, startTransition, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 
-import { getHistory, getSessionReport, triggerSessionReportGeneration } from "@/lib/api";
-import type { HistoricalSessionSummary, ReportProgressState, ReportProgressStep, SessionReport } from "@/types/report";
+import { getSessionReport, triggerSessionReportGeneration } from "@/lib/api";
+import type { ReportProgressState, ReportProgressStep, SessionReport } from "@/types/report";
 import type { SessionSetup, TranscriptChunk } from "@/types/session";
 
 interface CachedReplayMedia {
@@ -19,10 +19,7 @@ interface SessionResultContextValue {
   replaySessionId: string | null;
   replayMedia: CachedReplayMedia | null;
   transcript: TranscriptChunk[];
-  history: HistoricalSessionSummary[];
-  historyLoading: boolean;
   error: string | null;
-  refreshHistory: () => Promise<void>;
   cacheReplayMedia: (sessionId: string, blob: Blob, mediaType: "audio" | "video", durationMs: number) => void;
   saveResult: (setup: SessionSetup, transcript: TranscriptChunk[], sessionId: string | null) => Promise<void>;
 }
@@ -68,8 +65,6 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [replaySessionId, setReplaySessionId] = useState<string | null>(null);
   const [replayMedia, setReplayMedia] = useState<CachedReplayMedia | null>(null);
   const [transcript, setTranscript] = useState<TranscriptChunk[]>([]);
-  const [history, setHistory] = useState<HistoricalSessionSummary[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const reportPollingTimerRef = useRef<number | null>(null);
   const replayMediaUrlRef = useRef<string | null>(null);
@@ -144,24 +139,6 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     },
   }), []);
 
-  const refreshHistory = useCallback(async () => {
-    setHistoryLoading(true);
-
-    try {
-      const nextHistory = await getHistory();
-      setHistory(nextHistory);
-      setError(null);
-    } catch {
-      setError("历史记录加载失败");
-    } finally {
-      setHistoryLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refreshHistory();
-  }, [refreshHistory]);
-
   useEffect(() => clearReportPolling, [clearReportPolling]);
 
   useEffect(() => () => {
@@ -179,10 +156,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     if (nextReport.status !== "processing") {
       clearReportPolling();
     }
-    if (nextReport.status === "ready") {
-      void refreshHistory();
-    }
-  }, [clearReportPolling, refreshHistory]);
+  }, [clearReportPolling]);
 
   const startReportPolling = useCallback((sessionId: string) => {
     clearReportPolling();
@@ -254,14 +228,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       replaySessionId,
       replayMedia,
       transcript,
-      history,
-      historyLoading,
       error,
-      refreshHistory,
       cacheReplayMedia,
       saveResult,
     }),
-    [cacheReplayMedia, error, history, historyLoading, refreshHistory, replayMedia, report, saveResult, setup, replaySessionId, transcript],
+    [cacheReplayMedia, error, replayMedia, report, saveResult, setup, replaySessionId, transcript],
   );
 
   return <SessionResultContext.Provider value={value}>{children}</SessionResultContext.Provider>;

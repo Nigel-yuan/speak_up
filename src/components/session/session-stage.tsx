@@ -66,7 +66,6 @@ export function SessionStage({
           cameraStream={cameraStream}
           onDocumentPick={onDocumentPick}
           onFrameCaptureReady={registerVideoFrameProvider}
-          statusMessage={statusMessage}
         >
           {controls}
         </DocumentStage>
@@ -117,35 +116,37 @@ export function SessionStage({
         )}
       </div>
 
-      <div className="min-h-0">
-        <QAAvatarPanel
-          audioUrl={qaAudioUrl}
-          autoPlayAudio={qaAudioAutoPlay}
-          avatarSrc={avatarSrc}
-          feedbackText={feedback?.feedbackText ?? null}
-          goal={goal}
-          phase={phase}
-          questionText={question?.questionText ?? null}
-          speaking={speaking}
-          turnId={question?.turnId ?? null}
-          onAudioPlaybackEnded={onQAAudioPlaybackEnded}
-          onAudioPlaybackStarted={onQAAudioPlaybackStarted}
-          onSpeakingChange={onInterviewerSpeakingChange}
-          insetPreview={
-            trainingMode === "document_speech" ? (
-              <CameraPanel
-                elapsedSeconds={elapsedSeconds}
-                isRunning={isRunning}
-                cameraPermissionState={cameraPermissionState}
-                cameraStream={cameraStream}
-                onFrameCaptureReady={registerVideoFrameProvider}
-                variant="inset"
-              >
-                <div />
-              </CameraPanel>
-            ) : undefined
-          }
-        />
+      <div className={trainingMode === "document_speech" ? "flex min-h-0 flex-col gap-3" : "min-h-0"}>
+        {trainingMode === "document_speech" ? (
+          <div className="h-[118px] shrink-0 overflow-hidden rounded-[24px] border border-white/70 bg-slate-950 shadow-[0_18px_45px_rgba(15,23,42,0.16)]">
+            <CameraPanel
+              elapsedSeconds={elapsedSeconds}
+              isRunning={isRunning}
+              cameraPermissionState={cameraPermissionState}
+              cameraStream={cameraStream}
+              onFrameCaptureReady={registerVideoFrameProvider}
+              variant="inset"
+            >
+              <div />
+            </CameraPanel>
+          </div>
+        ) : null}
+        <div className={trainingMode === "document_speech" ? "min-h-0 flex-1" : "h-full min-h-0"}>
+          <QAAvatarPanel
+            audioUrl={qaAudioUrl}
+            autoPlayAudio={qaAudioAutoPlay}
+            avatarSrc={avatarSrc}
+            feedbackText={feedback?.feedbackText ?? null}
+            goal={goal}
+            phase={phase}
+            questionText={question?.questionText ?? null}
+            speaking={speaking}
+            turnId={question?.turnId ?? null}
+            onAudioPlaybackEnded={onQAAudioPlaybackEnded}
+            onAudioPlaybackStarted={onQAAudioPlaybackStarted}
+            onSpeakingChange={onInterviewerSpeakingChange}
+          />
+        </div>
       </div>
     </div>
   );

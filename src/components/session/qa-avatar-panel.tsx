@@ -51,7 +51,6 @@ interface QAAvatarPanelProps {
   onAudioPlaybackEnded?: (turnId: string) => void;
   onAudioPlaybackStarted?: (turnId: string) => void;
   onSpeakingChange: (speaking: boolean) => void;
-  insetPreview?: React.ReactNode;
 }
 
 export function QAAvatarPanel({
@@ -67,7 +66,6 @@ export function QAAvatarPanel({
   onAudioPlaybackEnded,
   onAudioPlaybackStarted,
   onSpeakingChange,
-  insetPreview,
 }: QAAvatarPanelProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [blockedAudioUrl, setBlockedAudioUrl] = useState<string | null>(null);
@@ -123,28 +121,31 @@ export function QAAvatarPanel({
 
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(248,250,252,0.18),transparent_32%),linear-gradient(180deg,rgba(99,102,241,0.1),transparent_28%)]" />
 
-      <div className="relative flex items-center justify-between gap-3 border-b border-white/10 px-5 py-4">
-        <div>
-          <p className="text-xs uppercase tracking-[0.24em] text-slate-400">Q&A Mode</p>
-          <h3 className="mt-1 text-lg font-semibold text-white">AI 问答</h3>
-        </div>
-        <Badge tone={getPhaseTone(phase)}>{getPhaseLabel(phase)}</Badge>
-      </div>
-
       <div className="relative min-h-0 flex-1 px-5 pb-5 pt-5">
-        {insetPreview ? <div className="absolute right-0 top-0 z-20 h-[104px] w-[156px]">{insetPreview}</div> : null}
-
         <div className="flex h-full min-h-0 flex-col gap-4">
           <div
             className={`relative overflow-hidden rounded-[28px] border ${
               speaking ? "border-sky-300/50 shadow-[0_0_0_1px_rgba(125,211,252,0.22)]" : "border-white/10"
             } bg-gradient-to-b from-slate-800 to-slate-950 px-4 py-5 transition`}
           >
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <div className="rounded-full bg-white/10 px-3 py-1 text-xs font-semibold text-slate-200">
-                {speaking ? "Speaking..." : "Standby"}
+            <div className="relative mx-auto aspect-[4/5] max-h-[236px] overflow-hidden rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,#334155_0%,#111827_100%)]">
+              <div className="absolute right-3 top-3 z-10">
+                <Badge className="shadow-[0_8px_20px_rgba(15,23,42,0.22)]" tone={getPhaseTone(phase)}>
+                  {getPhaseLabel(phase)}
+                </Badge>
               </div>
-              {audioUrl ? (
+              <Image
+                src={avatarSrc}
+                alt="AI coach avatar"
+                width={640}
+                height={800}
+                className="h-full w-full object-cover"
+                priority={false}
+              />
+            </div>
+
+            {audioUrl ? (
+              <div className="mt-3 flex justify-end">
                 <button
                   type="button"
                   onClick={() => {
@@ -161,19 +162,8 @@ export function QAAvatarPanel({
                 >
                   {playbackBlocked ? "继续播放" : "重播提问"}
                 </button>
-              ) : null}
-            </div>
-
-            <div className="mx-auto aspect-[4/5] max-h-[236px] overflow-hidden rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,#334155_0%,#111827_100%)]">
-              <Image
-                src={avatarSrc}
-                alt="AI coach avatar"
-                width={640}
-                height={800}
-                className="h-full w-full object-cover"
-                priority={false}
-              />
-            </div>
+              </div>
+            ) : null}
 
             <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10">
               <div

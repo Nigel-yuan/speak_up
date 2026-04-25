@@ -81,6 +81,7 @@ export function SessionWorkspace({
   const language = "zh";
   const [trainingMode, setTrainingMode] = useState<TrainingMode>("free_speech");
   const [qaEnabled, setQAEnabled] = useState(false);
+  const [qaStoppedByUser, setQAStoppedByUser] = useState(false);
   const [cameraPermissionState, setCameraPermissionState] = useState<"idle" | "granted" | "denied">("idle");
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
   const [coachSelectionOpen, setCoachSelectionOpen] = useState(false);
@@ -354,10 +355,16 @@ export function SessionWorkspace({
   }, [stopReplayCapture]);
 
   const openDocumentPicker = () => {
+    if (qaEnabled) {
+      return;
+    }
     documentInputRef.current?.click();
   };
 
   const clearDocumentAsset = () => {
+    if (qaEnabled) {
+      return;
+    }
     if (currentDocumentUrlRef.current) {
       URL.revokeObjectURL(currentDocumentUrlRef.current);
       currentDocumentUrlRef.current = null;
@@ -371,19 +378,41 @@ export function SessionWorkspace({
   };
 
   const handleTrainingModeChange = (nextMode: TrainingMode) => {
+    if (qaEnabled) {
+      return;
+    }
     setTrainingMode(nextMode);
     setDocumentError(null);
   };
 
+  const launchQA = useCallback(() => {
+    startQA({
+      trainingMode,
+      voiceProfileId: selectedCoachProfileId,
+      documentName: documentAsset?.name ?? null,
+      documentText: documentAsset?.extractedText ?? documentAsset?.markdownSource ?? null,
+      manualText: null,
+    });
+  }, [
+    documentAsset?.extractedText,
+    documentAsset?.markdownSource,
+    documentAsset?.name,
+    selectedCoachProfileId,
+    startQA,
+    trainingMode,
+  ]);
+
   const handleQAToggle = () => {
     if (qaEnabled) {
       setQAEnabled(false);
+      setQAStoppedByUser(false);
       if (qaState.enabled) {
         stopQA();
       }
       return;
     }
 
+    setQAStoppedByUser(false);
     setQAEnabled(true);
   };
 
@@ -417,6 +446,22 @@ export function SessionWorkspace({
     sessionId,
     trainingMode,
     updateQAPrewarmContext,
+  ]);
+
+  useEffect(() => {
+    if (!qaEnabled || qaStoppedByUser || !isRunning || controlsDisabled || qaState.enabled || qaState.phase !== "idle") {
+      return;
+    }
+
+    launchQA();
+  }, [
+    controlsDisabled,
+    isRunning,
+    launchQA,
+    qaEnabled,
+    qaState.enabled,
+    qaState.phase,
+    qaStoppedByUser,
   ]);
 
   const handleDocumentSelection = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -549,23 +594,35 @@ export function SessionWorkspace({
     : selectedCoachProfileId;
   const activeCoachProfile = getCoachProfileById(activeCoachProfileId) ?? coachProfiles[0] ?? null;
   const avatarSrc = activeCoachProfile?.avatarSrc ?? "/avatars/interviewer-female.svg";
-  const displayedQuestion = qaQuestion ?? (qaState.currentQuestion
+  const qaEnded = qaStoppedByUser || qaState.phase === "completed";
+  const displayedGoal = qaEnded ? null : qaState.currentQuestionGoal;
+  const displayedQuestion = qaEnded
     ? {
-        turnId: qaState.currentTurnId ?? "qa-current",
-        questionText: qaState.currentQuestion,
-        goal: qaState.currentQuestionGoal ?? "",
+        turnId: qaState.currentTurnId ?? "qa-ended",
+        questionText: "本轮问答已结束",
+        goal: "",
         followUp: false,
         expectedPoints: [],
       }
-    : qaState.phase === "preparing_context"
-      ? {
-          turnId: qaState.currentTurnId ?? "qa-preparing",
-          questionText: "AI 正在基于你刚才的演讲内容生成问题，Transcript 和 Live Coach 会继续更新。",
-          goal: "整理上下文并生成当前最合适的问题。",
-          followUp: false,
-          expectedPoints: [],
-        }
-      : null);
+    : qaQuestion ??
+      (qaState.currentQuestion
+        ? {
+            turnId: qaState.currentTurnId ?? "qa-current",
+            questionText: qaState.currentQuestion,
+            goal: qaState.currentQuestionGoal ?? "",
+            followUp: false,
+            expectedPoints: [],
+          }
+        : qaState.phase === "preparing_context"
+          ? {
+              turnId: qaState.currentTurnId ?? "qa-preparing",
+              questionText: "AI 正在基于你刚才的演讲内容生成问题，Transcript 和 Live Coach 会继续更新。",
+              goal: "整理上下文并生成当前最合适的问题。",
+              followUp: false,
+              expectedPoints: [],
+            }
+          : null);
+  const displayedQAPhase = qaEnded ? "completed" : qaState.phase;
   const displayedFeedback = qaFeedback ?? (qaState.latestFeedback
     ? {
         turnId: qaState.currentTurnId ?? "qa-current",
@@ -575,16 +632,6 @@ export function SessionWorkspace({
         nextAction: "next_question" as const,
       }
     : null);
-
-  const launchQA = () => {
-    startQA({
-      trainingMode,
-      voiceProfileId: selectedCoachProfileId,
-      documentName: documentAsset?.name ?? null,
-      documentText: documentAsset?.extractedText ?? documentAsset?.markdownSource ?? null,
-      manualText: null,
-    });
-  };
 
   return (
     <main className="h-screen overflow-hidden bg-slate-100 p-4 text-slate-950 md:p-5">
@@ -616,15 +663,12 @@ export function SessionWorkspace({
               />
             }
             qaControls={
-              qaEnabled ? (
+              qaEnabled && qaState.phase !== "idle" && qaState.phase !== "completed" ? (
                 <QAControlBar
                   disabled={controlsDisabled}
-                  isRunning={isRunning}
                   phase={qaState.phase}
-                  qaEnabled={qaEnabled}
-                  onStartQA={launchQA}
                   onStopQA={() => {
-                    setQAEnabled(false);
+                    setQAStoppedByUser(true);
                     stopQA();
                   }}
                 />
@@ -642,9 +686,9 @@ export function SessionWorkspace({
               documentAsset={documentAsset}
               elapsedSeconds={elapsedSeconds}
               feedback={displayedFeedback}
-              goal={qaState.currentQuestionGoal}
+              goal={displayedGoal}
               isRunning={isRunning && !controlsDisabled}
-              phase={qaState.phase}
+              phase={displayedQAPhase}
               qaAudioUrl={qaAudioUrl}
               qaAudioAutoPlay={qaAudioAutoPlay}
               qaEnabled={qaEnabled}

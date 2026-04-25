@@ -103,6 +103,33 @@ a {
   animation: report-progress-sheen 3.4s linear infinite;
 }
 
+.toolbar-panel-enter {
+  animation: toolbar-panel-enter 180ms ease-out both;
+}
+
+.report-replay-cta::after {
+  content: "";
+  position: absolute;
+  inset: -30% auto -30% -45%;
+  z-index: 0;
+  width: 42%;
+  transform: skewX(-18deg);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.62), transparent);
+  animation: report-button-sheen 2.4s ease-in-out infinite;
+}
+
+.report-replay-cta {
+  isolation: isolate;
+}
+
+.report-replay-hint {
+  animation: report-hint-enter 220ms ease-out both;
+}
+
+.report-waiting-line {
+  animation: report-waiting-line 1.5s ease-in-out infinite;
+}
+
 .report-progress-step-active {
   display: inline-block;
   width: 16px;
@@ -111,6 +138,18 @@ a {
   border: 2px solid #8b5cf6;
   border-right-color: transparent;
   animation: spin 0.9s linear infinite;
+}
+
+@keyframes toolbar-panel-enter {
+  0% {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @keyframes report-progress-wave {
@@ -150,5 +189,39 @@ a {
   100% {
     transform: scale(0.95);
     box-shadow: 0 0 0 0 rgba(124, 58, 237, 0);
+  }
+}
+
+@keyframes report-button-sheen {
+  0% {
+    left: -45%;
+  }
+
+  52%,
+  100% {
+    left: 118%;
+  }
+}
+
+@keyframes report-hint-enter {
+  0% {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes report-waiting-line {
+  0% {
+    transform: translateX(-120%);
+  }
+
+  55%,
+  100% {
+    transform: translateX(220%);
   }
 }

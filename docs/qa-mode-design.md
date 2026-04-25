@@ -34,9 +34,15 @@
 
 - `src/components/session/session-workspace.tsx`
   - 训练页主容器
-  - QA 开关、文档上传、voice profile
+  - QA 开关、文档上传、训练录制
 - `src/components/session/session-stage.tsx`
   - 自由演讲 / 文档演讲 / QA 分屏舞台
+- `src/components/session/document-stage.tsx`
+  - 非 QA 文档演讲舞台，保留右上角本人视频预览
+- `src/components/session/document-preview-panel.tsx`
+  - QA 文档演讲下的左侧文档预览
+- `src/components/session/document-viewer.tsx`
+  - PDF / Markdown 共用预览渲染，Markdown 在白色文档卡片内部滚动
 - `src/components/session/qa-avatar-panel.tsx`
   - interviewer 头像、问题、音频播放
 - `src/hooks/useMockSession.ts`
@@ -61,7 +67,7 @@
 
 它的特点：
 
-- 由 [session_manager.py](/Users/bytedance/my_project/speak_up/backend/app/services/session_manager.py:1208) 的后台 task 触发
+- 由 [session_manager.py](../backend/app/services/session_manager.py) 的后台 task 触发
 - 主问答推进不会直接 `await` 它
 - `qa.auto_advance` 和 `_commit_qa_user_turn()` 也不会等它完成
 - prewarm 完成后只更新内存里的 `prewarm_brief`，不会自己立刻推一轮 provider `session.update`
@@ -153,6 +159,8 @@
 
 - 上传 `pdf` / `md` 后，前端先调用 `/api/document/extract`
 - 提取出的纯文本进入 `document_text`
+- 前端预览层只负责展示文档；普通文档模式和 QA 文档预览共用 `DocumentAssetPreview`
+- Markdown 预览有独立内部滚动层，不会撑出白色文档卡片
 - `content_source_service` 会把：
   - 文档文本
   - 手输文本
@@ -197,7 +205,7 @@
 
 ### 7.1 “短内容” 当前怎么判定
 
-当前 `prewarm` 的跳过条件在 [qa_mode_orchestrator.py](/Users/bytedance/my_project/speak_up/backend/app/services/qa_mode_orchestrator.py:199)：
+当前 `prewarm` 的跳过条件在 [qa_mode_orchestrator.py](../backend/app/services/qa_mode_orchestrator.py)：
 
 - `combined_chars < 120`：`too_short`
 - 距离上次 prewarm 新增不到 `40` 字：`small_delta`

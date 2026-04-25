@@ -231,7 +231,7 @@ class ReportBrainService:
         )
 
         system_prompt = (
-            "你是 Speak Up 的赛后报告生成助手。"
+            "你是 Speak Up 的报告生成助手。"
             "你要基于历史窗口评估包和最后一个未覆盖尾窗的原始数据，生成一份完整、统一、去重后的整场报告。"
             "不要重复窗口建议，要做整合。"
             "你只能评价用户的演讲表现。"
@@ -239,6 +239,8 @@ class ReportBrainService:
             "不要使用内部维度 id 或机制术语，例如 rhythm、vocal_tone、content_quality、expression_structure、body、facial_expression、维度反馈。"
             "如果要给建议，必须改写成用户能直接理解的自然表达。"
             f"当前报告要采用“{coach_profile.coach_name}”这位教练的人设口吻，但仍然必须保持专业、克制、面向用户。"
+            "headline 必须直接说重点，像给用户的一句话提醒；不要写教练名，不要把标题包装成“某某报告”，不要带冒号标题，也不要写“阶段调整”“关键优化”这类抽象包装。"
+            "中文 headline 控制在 18 个字以内，优先使用“开场先说重点”“别绕铺垫，先给结论”这类用户一眼能懂的说法。"
             f"{coach_profile.report_instruction_zh}"
             "必须输出 JSON。"
         )
@@ -251,7 +253,7 @@ class ReportBrainService:
                 "tail_window": self._tail_payload(tail_bundle),
                 "top_dimensions": list(TOP_DIMENSION_ORDER),
                 "output_schema": {
-                    "headline": "string",
+                    "headline": "direct short coaching point, no coach name, no report label, no colon",
                     "encouragement": "string",
                     "summary_paragraph": "string",
                     "highlights": ["string"],
@@ -447,7 +449,11 @@ class ReportBrainService:
     ) -> SessionReport:
         dimensions = self._dimension_scores_from_payload(payload.get("dimensions"), language=language, fallback=fallback.dimensions)
         overall_score = self._weighted_score(scenario_id, dimensions) if dimensions else fallback.overallScore
-        headline = self._coerce_str(payload.get("headline"), fallback.headline)
+        headline = self._sanitize_report_headline(
+            language=language,
+            headline=self._coerce_str(payload.get("headline"), fallback.headline),
+            fallback=fallback.headline,
+        )
         encouragement = self._coerce_str(payload.get("encouragement"), fallback.encouragement)
         summary_paragraph = self._coerce_str(payload.get("summary_paragraph"), fallback.summaryParagraph)
         highlights = self._sanitize_highlights(
@@ -1005,6 +1011,35 @@ class ReportBrainService:
         total_weight = sum(weight_map.values())
         weighted_sum = sum(dimension.score * weight_map[dimension.id] for dimension in dimensions)
         return round(weighted_sum / max(total_weight, 1))
+
+    def _sanitize_report_headline(self, *, language: LanguageOption, headline: str, fallback: str) -> str:
+        result = str(headline or "").strip() or fallback
+        result = re.sub(r"\s+", " ", result).strip(" “”…\"'《》【】[]()（）")
+        result = re.sub(r"^.{0,24}?(?:教练)?(?:赛后|训练|本轮训练)?报告\s*[:：]\s*", "", result)
+        result = re.sub(r"^(?:headline|title)\s*[:：]\s*", "", result, flags=re.IGNORECASE)
+        result = result.strip(" ：:，,。.!！?？;；-—")
+
+        normalized = re.sub(r"\s+", "", result).lower()
+        if language != "en" and (
+            "表达启动阶段的关键调整" in normalized
+            or "启动阶段的关键调整" in normalized
+        ):
+            return "开场先说重点"
+
+        if "报告" in normalized or not result:
+            result = fallback.strip(" ：:，,。.!！?？;；-—")
+
+        if language == "en":
+            result = re.sub(r"\bpost[- ]?(session|training)? report\b[:：]?\s*", "", result, flags=re.IGNORECASE)
+            result = result.strip(" ：:，,。.!！?？;；-—")
+            return result or "Lead with the point"
+
+        if len(result) > 18:
+            compact = re.split(r"[，,。.!！?？；;]", result, maxsplit=1)[0].strip()
+            result = compact if compact else result
+        if len(result) > 18:
+            result = result[:18].rstrip(" ：:，,、")
+        return result or "开场先说重点"
 
     def _build_headline(self, language: LanguageOption, overall_score: int, best_dimension_label: str) -> str:
         if overall_score >= 86:

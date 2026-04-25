@@ -27,8 +27,8 @@ export function TranscriptPanel({
 
       <div className="min-h-0 space-y-2.5 overflow-y-auto pr-1">
         {transcript.length === 0 && !activeTranscript ? (
-          <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-[13px] leading-6 text-slate-400">
-            点击开始后，这里会像实时转写一样滚动出现文字内容。
+          <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm font-medium leading-6 text-slate-500">
+            AI 正在实时转写中......
           </div>
         ) : null}
 

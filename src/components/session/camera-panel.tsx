@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 
 interface CameraPanelProps {
@@ -19,16 +18,8 @@ interface CameraPanelProps {
 const MAX_CAPTURE_WIDTH = 1280;
 const MAX_CAPTURE_HEIGHT = 720;
 
-function formatTime(totalSeconds: number) {
-  const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
-  const seconds = String(totalSeconds % 60).padStart(2, "0");
-  return `${minutes}:${seconds}`;
-}
-
 export function CameraPanel({
   children,
-  isRunning,
-  elapsedSeconds,
   cameraStream,
   cameraPermissionState,
   onFrameCaptureReady,
@@ -126,10 +117,10 @@ export function CameraPanel({
 
   if (variant === "inset") {
     return (
-      <Card className="flex h-full min-h-0 flex-col overflow-hidden rounded-[24px] border-white/10 bg-slate-950 text-white shadow-[0_18px_45px_rgba(2,6,23,0.26)]">
+      <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-[18px] bg-transparent text-white">
         <div className="relative min-h-0 flex-1">
           {permissionState === "denied" ? (
-            <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
+            <div className="flex h-full flex-col items-center justify-center gap-2 rounded-[18px] bg-slate-950/70 px-4 text-center">
               <div className="rounded-full bg-white/10 px-3 py-1 text-xs text-slate-300">摄像头未授权</div>
               <p className="text-xs leading-5 text-slate-400">右上角视频预览不可用</p>
             </div>
@@ -138,22 +129,11 @@ export function CameraPanel({
               <video ref={handleVideoRef} autoPlay playsInline muted className="h-full w-full object-cover" />
               <canvas ref={canvasRef} className="hidden" />
               <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_top,rgba(2,6,23,0.68),transparent_40%)]" />
-              <div className="absolute left-3 top-3 flex items-center gap-2">
-                <Badge tone={isRunning ? "positive" : "neutral"}>{isRunning ? "进行中" : "待开始"}</Badge>
-                <span className="rounded-full bg-black/45 px-2.5 py-1 text-[11px] font-semibold text-slate-100 backdrop-blur">
-                  {formatTime(elapsedSeconds)}
-                </span>
-              </div>
-              <div className="absolute bottom-3 left-3 right-3 flex items-end justify-between gap-2">
-                <div className="rounded-2xl bg-black/45 px-3 py-2 text-xs font-medium text-slate-100 backdrop-blur">
-                  摄像头预览
-                </div>
-                {children ? <div className="pointer-events-auto">{children}</div> : null}
-              </div>
+              {children ? <div className="pointer-events-auto absolute bottom-3 right-3">{children}</div> : null}
             </>
           )}
         </div>
-      </Card>
+      </div>
     );
   }
 

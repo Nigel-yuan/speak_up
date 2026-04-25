@@ -382,6 +382,14 @@ class SessionManager:
                 document_text=message.document_text,
                 manual_text=message.manual_text,
             )
+            logger.info(
+                "qa.context.ready session=%s entered_ai_qa=true mode=%s document_name=%s document_chars=%s manual_chars=%s",
+                session.session_id,
+                message.training_mode or "free_speech",
+                message.document_name or "-",
+                len(message.document_text or ""),
+                len(message.manual_text or ""),
+            )
             session.coach_profile_id = self.qa_mode_orchestrator.get_voice_profile_config(session.session_id).profile.id
             await self.report_job_service.update_coach_profile(session.session_id, session.coach_profile_id)
             for event in events:

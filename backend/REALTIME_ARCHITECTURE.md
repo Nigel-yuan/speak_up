@@ -95,9 +95,9 @@ Provider：
 
 后端核心：
 
-- [session_manager.py](/Users/bytedance/my_project/speak_up/backend/app/services/session_manager.py)
-- [qa_mode_orchestrator.py](/Users/bytedance/my_project/speak_up/backend/app/services/qa_mode_orchestrator.py)
-- [qa_omni_realtime_service.py](/Users/bytedance/my_project/speak_up/backend/app/services/qa_omni_realtime_service.py)
+- [session_manager.py](app/services/session_manager.py)
+- [qa_mode_orchestrator.py](app/services/qa_mode_orchestrator.py)
+- [qa_omni_realtime_service.py](app/services/qa_omni_realtime_service.py)
 
 当前规则：
 
@@ -117,7 +117,7 @@ QA prewarm 是后台 sidecar：
 
 ## 7. 报告
 
-报告已经不再是原型接口，当前链路由 [report_job_service.py](/Users/bytedance/my_project/speak_up/backend/app/services/report_job_service.py) 负责。
+报告已经不再是原型接口，当前链路由 [report_job_service.py](app/services/report_job_service.py) 负责。
 
 训练中会持续沉淀：
 
@@ -194,16 +194,16 @@ QA prewarm 是后台 sidecar：
 
 ### 前端
 
-- [src/hooks/useMockSession.ts](/Users/bytedance/my_project/speak_up/src/hooks/useMockSession.ts)
-- [src/components/session/session-workspace.tsx](/Users/bytedance/my_project/speak_up/src/components/session/session-workspace.tsx)
-- [src/components/session/live-analysis-panel.tsx](/Users/bytedance/my_project/speak_up/src/components/session/live-analysis-panel.tsx)
-- [src/components/session/document-stage.tsx](/Users/bytedance/my_project/speak_up/src/components/session/document-stage.tsx)
+- [src/hooks/useMockSession.ts](../src/hooks/useMockSession.ts)
+- [src/components/session/session-workspace.tsx](../src/components/session/session-workspace.tsx)
+- [src/components/session/live-analysis-panel.tsx](../src/components/session/live-analysis-panel.tsx)
+- [src/components/session/document-stage.tsx](../src/components/session/document-stage.tsx)
 
 ### 后端
 
-- [backend/app/main.py](/Users/bytedance/my_project/speak_up/backend/app/main.py)
-- [backend/app/services/session_manager.py](/Users/bytedance/my_project/speak_up/backend/app/services/session_manager.py)
-- [backend/app/services/stt_service.py](/Users/bytedance/my_project/speak_up/backend/app/services/stt_service.py)
-- [backend/app/services/omni_service.py](/Users/bytedance/my_project/speak_up/backend/app/services/omni_service.py)
-- [backend/app/services/speech_analysis_service.py](/Users/bytedance/my_project/speak_up/backend/app/services/speech_analysis_service.py)
-- [backend/app/services/coach_panel_service.py](/Users/bytedance/my_project/speak_up/backend/app/services/coach_panel_service.py)
+- [backend/app/main.py](app/main.py)
+- [backend/app/services/session_manager.py](app/services/session_manager.py)
+- [backend/app/services/stt_service.py](app/services/stt_service.py)
+- [backend/app/services/omni_service.py](app/services/omni_service.py)
+- [backend/app/services/speech_analysis_service.py](app/services/speech_analysis_service.py)
+- [backend/app/services/coach_panel_service.py](app/services/coach_panel_service.py)

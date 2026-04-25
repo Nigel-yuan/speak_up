@@ -12,7 +12,7 @@
 
 - 这份文档包含一部分早期 pose 路线的设计背景
 - 当前运行时代码已经切到“前端只采集，后端统一做多模态 coach”
-- 以 [README.md](/Users/bytedance/my_project/speak_up/README.md) 和 [REALTIME_ARCHITECTURE.md](/Users/bytedance/my_project/speak_up/backend/REALTIME_ARCHITECTURE.md) 为当前实现口径
+- 以 [README.md](README.md) 和 [REALTIME_ARCHITECTURE.md](backend/REALTIME_ARCHITECTURE.md) 为当前实现口径
 
 ---
 

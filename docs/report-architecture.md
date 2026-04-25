@@ -64,6 +64,8 @@
 
 当前不再做前端 section streaming，报告是一次性生成、一次性落盘。
 
+最终报告的 `headline` 会被约束成一句直接的训练重点，不展示教练名、报告包装标题或冒号式标题。
+
 ## 4. 六个固定维度
 
 报告固定使用以下 6 个一级维度：
@@ -118,8 +120,8 @@ Live Coach 仍然只负责实时反馈，不负责赛后整场归纳。
 
 实现位置：
 
-- [report_artifact_service.py](/Users/bytedance/my_project/speak_up/backend/app/services/report_artifact_service.py:11)
-- [report_repository.py](/Users/bytedance/my_project/speak_up/backend/app/services/report_repository.py:19)
+- [report_artifact_service.py](../backend/app/services/report_artifact_service.py)
+- [report_repository.py](../backend/app/services/report_repository.py)
 
 ## 7. 报告页等待态
 
@@ -131,9 +133,9 @@ Live Coach 仍然只负责实时反馈，不负责赛后整场归纳。
 
 当前页面会明确提示用户：
 
-- 可以先进入“回放复盘”
-- 先查看视频、文字稿和 AI Live Coach 时间线
-- 用这段时间缓冲报告生成
+- 报告正在整理，完成后会自动显示
+- 生成时间可能会比较长，可以等待，也可以先去回放复盘
+- 右上角固定展示“先去回放复盘”入口，并在进入等待页时给出短提示
 
 ## 8. 当前边界
 

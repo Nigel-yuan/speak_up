@@ -135,7 +135,7 @@ function ReplayMediaPlayer({
 }) {
   if (!mediaUrl) {
     return (
-      <div className="flex h-[min(72vh,860px)] items-center justify-center rounded-[32px] border border-dashed border-slate-300 bg-slate-50 px-8 text-center text-sm leading-7 text-slate-500">
+      <div className="flex h-[calc(100vh-174px)] min-h-[560px] items-center justify-center rounded-[26px] border border-dashed border-slate-300 bg-slate-50 px-8 text-center text-sm leading-7 text-slate-500">
         {emptyMessage}
       </div>
     );
@@ -148,7 +148,7 @@ function ReplayMediaPlayer({
         controls
         playsInline
         preload="auto"
-        className="h-[min(72vh,860px)] w-full rounded-[32px] object-cover object-center shadow-[0_18px_50px_rgba(15,23,42,0.16)]"
+        className="h-[calc(100vh-174px)] min-h-[560px] w-full rounded-[26px] object-cover object-center shadow-[0_18px_50px_rgba(15,23,42,0.16)]"
         src={mediaUrl}
         onTimeUpdate={(event) => onTimeUpdate(Math.round(event.currentTarget.currentTime * 1000))}
       />
@@ -156,8 +156,8 @@ function ReplayMediaPlayer({
   }
 
   return (
-    <div className="rounded-[32px] bg-slate-100 p-6">
-      <div className="mb-8 flex h-[min(72vh,860px)] items-center justify-center rounded-[28px] bg-gradient-to-br from-violet-200 via-violet-100 to-slate-200">
+    <div className="rounded-[26px] bg-slate-100 p-4">
+      <div className="mb-5 flex h-[calc(100vh-260px)] min-h-[500px] items-center justify-center rounded-[24px] bg-gradient-to-br from-violet-200 via-violet-100 to-slate-200">
         <div className="text-center">
           <p className="text-sm font-semibold text-violet-700">Audio Replay</p>
           <p className="mt-2 text-5xl font-semibold tabular-nums text-slate-950">{formatClock(currentTimeMs)}</p>
@@ -321,59 +321,58 @@ export default function SessionReplayPage({ params }: { params: Promise<{ sessio
   const restartHref = `/session?scenario=${replay.scenarioId}${activeCoachProfileId ? `&coach=${activeCoachProfileId}` : ""}`;
 
   return (
-    <main className="mx-auto min-h-screen w-full max-w-[1800px] px-4 py-6 md:px-8 xl:px-10">
-      <div className="mb-8 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-        <div>
-          <Link href={reportHref} className="text-sm font-semibold text-slate-500">
-            ← 返回报告
+    <main className="mx-auto min-h-screen w-full max-w-[1800px] px-4 py-4 md:px-6 xl:px-8">
+      <div className="mb-4 rounded-[26px] border border-white/80 bg-white/90 px-4 py-3 shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex min-w-0 flex-col gap-3 md:flex-row md:items-center">
+            <Link
+              href={reportHref}
+              className="inline-flex w-fit items-center justify-center rounded-full border border-slate-300 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-950 shadow-[0_8px_18px_rgba(15,23,42,0.06)] transition hover:border-slate-400 hover:bg-slate-200"
+            >
+              ← 返回报告
+            </Link>
+            {coachProfile ? (
+              <div className="inline-flex min-w-0 items-center gap-3 rounded-[20px] border border-violet-100 bg-white/90 px-3 py-2 shadow-[0_12px_28px_rgba(15,23,42,0.05)]">
+                <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-[15px] border border-violet-100 bg-violet-50">
+                  <Image
+                    src={coachProfile.avatarSrc}
+                    alt={coachProfile.name}
+                    fill
+                    className="object-cover"
+                    sizes="44px"
+                  />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <h1 className="truncate text-base font-semibold text-slate-950 md:text-lg">按时间轴回看这次练习</h1>
+                    <span className="h-4 w-px bg-slate-200" />
+                    <span className="shrink-0 text-sm font-semibold text-slate-500">{timelineItems.length} 个同步节点</span>
+                  </div>
+                  <p className="truncate text-sm font-semibold text-slate-950">
+                    {coachProfile.name}
+                    <span className="ml-2 font-medium text-slate-500">{coachProfile.personaType}</span>
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="flex min-w-0 flex-wrap items-center gap-2 rounded-[20px] border border-slate-200 bg-white/90 px-3 py-2 shadow-[0_12px_28px_rgba(15,23,42,0.05)]">
+                <h1 className="truncate text-base font-semibold text-slate-950 md:text-lg">按时间轴回看这次练习</h1>
+                <span className="h-4 w-px bg-slate-200" />
+                <span className="shrink-0 text-sm font-semibold text-slate-500">{timelineItems.length} 个同步节点</span>
+              </div>
+            )}
+          </div>
+          <Link
+            href={restartHref}
+            className="inline-flex w-fit items-center justify-center rounded-full bg-violet-600 px-5 py-3 text-sm font-semibold !text-white shadow-[0_12px_24px_rgba(109,40,217,0.22)] transition hover:bg-violet-500 hover:!text-white"
+          >
+            再来一轮
           </Link>
-          <p className="mt-3 text-sm font-semibold text-violet-600">回放复盘</p>
-          <h1 className="mt-2 text-3xl font-semibold text-slate-950 xl:text-[2.35rem]">按时间轴回看这次练习</h1>
-          <p className="mt-2 max-w-3xl text-sm leading-7 text-slate-500">
-            {timelineItems.length} 个时间点
-          </p>
-          {coachProfile ? (
-            <div className="mt-4 inline-flex items-center gap-3 rounded-[24px] border border-violet-100 bg-white/92 px-4 py-3 shadow-[0_14px_34px_rgba(15,23,42,0.06)]">
-              <div className="relative h-14 w-14 overflow-hidden rounded-[18px] border border-violet-100 bg-violet-50">
-                <Image
-                  src={coachProfile.avatarSrc}
-                  alt={coachProfile.name}
-                  fill
-                  className="object-cover"
-                  sizes="56px"
-                />
-              </div>
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-violet-500">Replay Coach</p>
-                <p className="mt-1 text-base font-semibold text-slate-950">
-                  {coachProfile.name}
-                  <span className="ml-2 text-sm font-medium text-slate-500">{coachProfile.personaType}</span>
-                </p>
-                <p className="mt-1 text-sm text-slate-500">{coachProfile.liveStatus}</p>
-              </div>
-            </div>
-          ) : null}
         </div>
-        <Link
-          href={restartHref}
-          className="inline-flex items-center justify-center rounded-full bg-violet-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-violet-500"
-        >
-          再来一轮
-        </Link>
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.55fr)_minmax(500px,0.9fr)] 2xl:grid-cols-[minmax(0,1.7fr)_620px]">
-        <Card className="overflow-hidden border-slate-200 bg-white p-7 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
-          <div className="mb-5 flex items-center justify-between gap-4">
-            <div>
-              <p className="text-sm text-slate-500">媒体回放</p>
-              <h2 className="mt-1 text-2xl font-semibold text-slate-950 xl:text-[2rem]">左侧视频，右侧同步复盘</h2>
-            </div>
-            <div className="rounded-full bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">
-              当前时间 {formatClock(currentTimeMs)}
-            </div>
-          </div>
-
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.95fr)_minmax(420px,0.7fr)] 2xl:grid-cols-[minmax(0,2.1fr)_520px]">
+        <Card className="overflow-hidden border-slate-200 bg-white p-3 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
           <ReplayMediaPlayer
             key={effectiveMediaUrl ?? replay.mediaUrl ?? "no-media"}
             mediaRef={mediaRef}
@@ -385,18 +384,17 @@ export default function SessionReplayPage({ params }: { params: Promise<{ sessio
           />
         </Card>
 
-        <Card className="flex max-h-[calc(100vh-190px)] min-h-[760px] flex-col p-7 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
-          <div className="mb-5 flex items-center justify-between gap-3">
+        <Card className="flex h-[calc(100vh-142px)] min-h-[560px] flex-col p-4 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
+          <div className="mb-4 flex items-center justify-between gap-3">
             <div>
-              <p className="text-sm text-slate-500">右侧时间线</p>
-              <h2 className="mt-1 text-2xl font-semibold text-slate-950">文字稿 + AI Live Coach</h2>
+              <h2 className="text-xl font-semibold text-slate-950">文字稿 + AI Live Coach</h2>
               {coachProfile ? (
-                <p className="mt-2 text-sm text-slate-500">
+                <p className="mt-1 text-sm text-slate-500">
                   当前由 <span className="font-semibold text-violet-700">{coachProfile.name}</span> 陪你一起复盘这次练习。
                 </p>
               ) : null}
             </div>
-            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500">
+            <span className="shrink-0 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500">
               {replay.transcript.length} 段文字稿 · {replay.coachInsights.length} 条建议
             </span>
           </div>

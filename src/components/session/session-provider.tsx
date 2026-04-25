@@ -29,7 +29,7 @@ const REPORT_PROGRESS_STEPS = [
   { key: "collecting", label: "收集本轮素材" },
   { key: "structuring", label: "整理问答与教练信号" },
   { key: "generating", label: "生成整场分析报告" },
-  { key: "finalizing", label: "写入最终结果" },
+  { key: "finalizing", label: "准备展示报告" },
 ] as const;
 type ReportStepStatus = ReportProgressStep["status"];
 

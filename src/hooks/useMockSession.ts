@@ -43,6 +43,13 @@ interface MainSpeakerAudioGateState {
   lastAcceptedAtMs: number;
   acceptedFrames: number;
   suppressedFrames: number;
+  voiceprintProfile: Float32Array | null;
+  voiceprintBootstrapSum: Float32Array | null;
+  voiceprintBootstrapFrames: number;
+  voiceprintAcceptedFrames: number;
+  voiceprintSuppressedFrames: number;
+  voiceprintMismatchFrames: number;
+  lastVoiceprintAcceptedAtMs: number;
 }
 
 const idleSessionState: SessionState = {
@@ -76,6 +83,17 @@ const MAIN_SPEAKER_GATE_NOISE_RATIO = 2.4;
 const MAIN_SPEAKER_GATE_TRAILING_RATIO = 0.62;
 const MAIN_SPEAKER_GATE_TRAILING_MS = 650;
 const MAIN_SPEAKER_GATE_DOMINANT_DECAY = 0.996;
+const MAIN_SPEAKER_VOICEPRINT_FREQUENCIES_HZ = [
+  140, 190, 260, 350, 470, 630, 850, 1150, 1550, 2100, 2850, 3850, 5200,
+] as const;
+const MAIN_SPEAKER_VOICEPRINT_BOOTSTRAP_FRAMES = 14;
+const MAIN_SPEAKER_VOICEPRINT_MIN_RMS = 0.009;
+const MAIN_SPEAKER_VOICEPRINT_MATCH_THRESHOLD = 0.58;
+const MAIN_SPEAKER_VOICEPRINT_RECENT_MATCH_THRESHOLD = 0.46;
+const MAIN_SPEAKER_VOICEPRINT_ADAPT_THRESHOLD = 0.78;
+const MAIN_SPEAKER_VOICEPRINT_MISMATCH_GRACE_FRAMES = 2;
+const MAIN_SPEAKER_VOICEPRINT_RECENT_ACCEPT_MS = 700;
+const MAIN_SPEAKER_VOICEPRINT_ADAPT_RATE = 0.035;
 const PARTIAL_FILLER_TOKENS = {
   en: new Set(["um", "uh", "well", "so", "hmm", "hm", "hmmm", "mhm", "mm"]),
   zh: new Set(["嗯", "啊", "额", "呃", "然后", "就是", "哦", "诶", "欸", "哎", "唉", "hmm", "hm", "hmmm", "mhm", "mm"]),
@@ -108,6 +126,13 @@ function createMainSpeakerAudioGateState(): MainSpeakerAudioGateState {
     lastAcceptedAtMs: 0,
     acceptedFrames: 0,
     suppressedFrames: 0,
+    voiceprintProfile: null,
+    voiceprintBootstrapSum: null,
+    voiceprintBootstrapFrames: 0,
+    voiceprintAcceptedFrames: 0,
+    voiceprintSuppressedFrames: 0,
+    voiceprintMismatchFrames: 0,
+    lastVoiceprintAcceptedAtMs: 0,
   };
 }
 
@@ -230,6 +255,180 @@ function acceptMainSpeakerFrame(state: MainSpeakerAudioGateState, rms: number, n
   );
   state.lastAcceptedAtMs = nowMs;
   state.acceptedFrames += 1;
+}
+
+function calculateZeroCrossingRate(samples: Float32Array) {
+  if (samples.length < 2) {
+    return 0;
+  }
+
+  let crossings = 0;
+  let previous = samples[0] ?? 0;
+  for (let index = 1; index < samples.length; index += 1) {
+    const current = samples[index] ?? 0;
+    if ((previous < 0 && current >= 0) || (previous >= 0 && current < 0)) {
+      crossings += 1;
+    }
+    previous = current;
+  }
+
+  return crossings / (samples.length - 1);
+}
+
+function calculateGoertzelPower(samples: Float32Array, sampleRate: number, frequencyHz: number) {
+  const omega = (2 * Math.PI * frequencyHz) / sampleRate;
+  const coefficient = 2 * Math.cos(omega);
+  const lastIndex = Math.max(samples.length - 1, 1);
+  let previous = 0;
+  let previous2 = 0;
+
+  for (let index = 0; index < samples.length; index += 1) {
+    const windowValue = 0.5 - 0.5 * Math.cos((2 * Math.PI * index) / lastIndex);
+    const value = (samples[index] ?? 0) * windowValue + coefficient * previous - previous2;
+    previous2 = previous;
+    previous = value;
+  }
+
+  return previous2 * previous2 + previous * previous - coefficient * previous * previous2;
+}
+
+function normalizeFeatureVector(values: number[]) {
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  let squaredSum = 0;
+  const normalized = new Float32Array(values.length);
+
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index] - mean;
+    normalized[index] = value;
+    squaredSum += value * value;
+  }
+
+  const length = Math.sqrt(squaredSum);
+  if (length <= 1e-6) {
+    return null;
+  }
+
+  for (let index = 0; index < normalized.length; index += 1) {
+    normalized[index] /= length;
+  }
+
+  return normalized;
+}
+
+function extractMainSpeakerVoiceprintFeature(samples: Float32Array) {
+  const rms = calculateRms(samples);
+  if (rms < MAIN_SPEAKER_VOICEPRINT_MIN_RMS) {
+    return null;
+  }
+
+  const rawPowers = MAIN_SPEAKER_VOICEPRINT_FREQUENCIES_HZ.map((frequencyHz) => {
+    const lowerPower = calculateGoertzelPower(samples, PCM_SAMPLE_RATE, frequencyHz * 0.92);
+    const centerPower = calculateGoertzelPower(samples, PCM_SAMPLE_RATE, frequencyHz);
+    const upperPower = calculateGoertzelPower(samples, PCM_SAMPLE_RATE, frequencyHz * 1.08);
+    return lowerPower + centerPower + upperPower;
+  });
+  const totalPower = rawPowers.reduce((sum, power) => sum + power, 0) + 1e-9;
+  const spectralShape = rawPowers.map((power) =>
+    Math.log1p((power / totalPower) * MAIN_SPEAKER_VOICEPRINT_FREQUENCIES_HZ.length),
+  );
+  const zeroCrossingRate = calculateZeroCrossingRate(samples);
+
+  return normalizeFeatureVector([...spectralShape, zeroCrossingRate * 2.5]);
+}
+
+function cosineSimilarity(left: Float32Array, right: Float32Array) {
+  const length = Math.min(left.length, right.length);
+  let sum = 0;
+  for (let index = 0; index < length; index += 1) {
+    sum += (left[index] ?? 0) * (right[index] ?? 0);
+  }
+  return sum;
+}
+
+function addVoiceprintBootstrapFrame(state: MainSpeakerAudioGateState, feature: Float32Array) {
+  if (!state.voiceprintBootstrapSum) {
+    state.voiceprintBootstrapSum = new Float32Array(feature.length);
+  }
+
+  for (let index = 0; index < feature.length; index += 1) {
+    state.voiceprintBootstrapSum[index] += feature[index] ?? 0;
+  }
+  state.voiceprintBootstrapFrames += 1;
+
+  if (state.voiceprintBootstrapFrames >= MAIN_SPEAKER_VOICEPRINT_BOOTSTRAP_FRAMES) {
+    const averaged = new Float32Array(state.voiceprintBootstrapSum.length);
+    for (let index = 0; index < averaged.length; index += 1) {
+      averaged[index] = (state.voiceprintBootstrapSum[index] ?? 0) / state.voiceprintBootstrapFrames;
+    }
+    const normalized = normalizeFeatureVector(Array.from(averaged));
+    if (normalized) {
+      state.voiceprintProfile = normalized;
+      state.lastVoiceprintAcceptedAtMs = typeof performance !== "undefined" ? performance.now() : Date.now();
+    }
+  }
+}
+
+function adaptMainSpeakerVoiceprintProfile(state: MainSpeakerAudioGateState, feature: Float32Array) {
+  if (!state.voiceprintProfile) {
+    return;
+  }
+
+  const adapted = new Array<number>(state.voiceprintProfile.length);
+  for (let index = 0; index < state.voiceprintProfile.length; index += 1) {
+    adapted[index] =
+      (state.voiceprintProfile[index] ?? 0) * (1 - MAIN_SPEAKER_VOICEPRINT_ADAPT_RATE) +
+      (feature[index] ?? 0) * MAIN_SPEAKER_VOICEPRINT_ADAPT_RATE;
+  }
+
+  const normalized = normalizeFeatureVector(adapted);
+  if (normalized) {
+    state.voiceprintProfile = normalized;
+  }
+}
+
+function applyMainSpeakerVoiceprintGate(
+  samples: Float32Array,
+  state: MainSpeakerAudioGateState,
+  nowMs = typeof performance !== "undefined" ? performance.now() : Date.now(),
+) {
+  if (samples.length === 0 || calculateRms(samples) < MAIN_SPEAKER_VOICEPRINT_MIN_RMS) {
+    return samples;
+  }
+
+  const feature = extractMainSpeakerVoiceprintFeature(samples);
+  if (!feature) {
+    return new Float32Array(samples.length);
+  }
+
+  if (!state.voiceprintProfile) {
+    addVoiceprintBootstrapFrame(state, feature);
+    state.voiceprintAcceptedFrames += 1;
+    state.lastVoiceprintAcceptedAtMs = nowMs;
+    return samples;
+  }
+
+  const similarity = cosineSimilarity(feature, state.voiceprintProfile);
+  const recentlyAccepted = nowMs - state.lastVoiceprintAcceptedAtMs <= MAIN_SPEAKER_VOICEPRINT_RECENT_ACCEPT_MS;
+  const accepted =
+    similarity >= MAIN_SPEAKER_VOICEPRINT_MATCH_THRESHOLD ||
+    (recentlyAccepted && similarity >= MAIN_SPEAKER_VOICEPRINT_RECENT_MATCH_THRESHOLD);
+
+  if (!accepted) {
+    state.voiceprintMismatchFrames += 1;
+    if (state.voiceprintMismatchFrames <= MAIN_SPEAKER_VOICEPRINT_MISMATCH_GRACE_FRAMES) {
+      return samples;
+    }
+    state.voiceprintSuppressedFrames += 1;
+    return new Float32Array(samples.length);
+  }
+
+  state.voiceprintMismatchFrames = 0;
+  state.voiceprintAcceptedFrames += 1;
+  state.lastVoiceprintAcceptedAtMs = nowMs;
+  if (similarity >= MAIN_SPEAKER_VOICEPRINT_ADAPT_THRESHOLD) {
+    adaptMainSpeakerVoiceprintProfile(state, feature);
+  }
+  return samples;
 }
 
 function applyMainSpeakerAudioGate(
@@ -831,7 +1030,8 @@ export function useMockSession(setup: SessionSetup) {
           return;
         }
 
-        const gatedSamples = applyMainSpeakerAudioGate(normalizedSamples, mainSpeakerAudioGateRef.current);
+        const energyGatedSamples = applyMainSpeakerAudioGate(normalizedSamples, mainSpeakerAudioGateRef.current);
+        const gatedSamples = applyMainSpeakerVoiceprintGate(energyGatedSamples, mainSpeakerAudioGateRef.current);
         const pcm16 = float32ToPcm16(gatedSamples);
         const payload = encodeBase64(new Uint8Array(pcm16.buffer));
 

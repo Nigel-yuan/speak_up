@@ -48,7 +48,7 @@
 - `src/hooks/useMockSession.ts`
   - WebSocket 客户端
   - 麦克风采集
-  - 主讲人能量门控和浏览器侧降噪约束
+  - 主讲人能量门控、轻量声纹门控和浏览器侧降噪约束
   - QA 音频流播放和播放状态回传
 
 ## 3. 运行时流程
@@ -118,9 +118,15 @@
    - 动态跟踪当前最强近场人声作为主讲人能量基线
    - 低于动态阈值的 chunk 会替换成等长静音
    - 等长静音保留时间轴，让后端 ASR / VAD 仍能判断停顿
-4. partial transcript 先写入 `current_live_partial_answer`
-5. final transcript 再落到 `current_answer_chunks`
-6. `speech_started` / `speech_stopped` 由 STT provider event 驱动
+4. 能量门控通过后，前端执行轻量声纹门控：
+   - 启动后收集约 `14` 个强语音 chunk，生成本轮主讲人的频谱 profile
+   - profile 使用多个语音频点的频谱包络和过零率，不依赖新模型或后端新接口
+   - 后续 chunk 会计算与主讲人 profile 的相似度
+   - 连续不匹配超过宽限帧后，chunk 会替换成等长静音
+   - 匹配度高的 chunk 会缓慢更新 profile，适应主讲人语气和距离变化
+5. partial transcript 先写入 `current_live_partial_answer`
+6. final transcript 再落到 `current_answer_chunks`
+7. `speech_started` / `speech_stopped` 由 STT provider event 驱动
 
 ### 3.5 自动推进
 
@@ -193,7 +199,7 @@
 - QA 默认首问和兜底追问不再反复问“表达核心是什么”；摘要不足时优先问具体判断、支撑依据和听众收获
 - QA 用户回答阶段会识别“我说完了 / 回答完了 / 就这么多 / 以上”等结束口令，绕过嘈杂环境下 VAD 不触发 `speech_stopped` 的问题，主动进入下一轮
 - QA 自动进入下一问要求回答达到最小有效长度；“嗯 / 啊 / 哦 / 好”等短噪声或语气词不会触发 `qa.auto_advance`
-- 当前主讲人过滤是前端能量门控，不是完整声纹分离；如果背景人声比主讲人更大，仍可能被保留。后续声纹分离应在送 ASR 前增加主讲人 embedding 校验。
+- 当前主讲人过滤是前端能量门控 + 轻量声纹门控，不是完整目标说话人提取；如果多人同时说话，只能降低误触发，不能把重叠人声干净分离。后续可把轻量 profile 替换为真正的说话人 embedding 校验。
 
 ## 6. 关键日志
 

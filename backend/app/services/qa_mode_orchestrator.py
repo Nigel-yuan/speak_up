@@ -444,6 +444,12 @@ class QAModeOrchestrator:
             return
         session.current_live_partial_answer = None
 
+    def current_answer_text(self, session_id: str) -> str:
+        session = self.sessions.get(session_id)
+        if session is None:
+            return ""
+        return self._compose_current_answer_text(session)
+
     def handle_assistant_turn_started(self, *, session_id: str, turn_id: str) -> list[QAStateEvent]:
         session = self.sessions[session_id]
         self._flush_current_answer(session)
@@ -558,9 +564,9 @@ class QAModeOrchestrator:
         session.brief = brief
         self._ensure_question_focuses(session, brief)
         profile = self.voice_profile_service.get(session.voice_profile_id)
-        summary = (brief.source_summary or bundle.combined_text[:520]).strip() or "当前上下文较少，请先从最核心的话题开始提问。"
-        topics = "；".join(brief.main_topics[:6]) or "核心观点、支撑依据、表达结构、听众价值"
-        key_points = "；".join(brief.key_points[:8]) or "先讲结论，再给依据，再说明为什么重要。"
+        summary = (brief.source_summary or bundle.combined_text[:520]).strip() or "当前上下文较少，请先从一个具体判断或最近提到的信息开始提问。"
+        topics = "；".join(brief.main_topics[:6]) or "具体判断、支撑依据、表达结构、听众收获"
+        key_points = "；".join(brief.key_points[:8]) or "先给一个具体判断，再给依据，再说明和听众有什么关系。"
         latest_context = self._latest_user_transcript(transcript_chunks) or "无"
         language_name = "中文" if session.language == "zh" else "English"
         progress_instruction = self._build_turn_progress_instruction(session)
@@ -582,6 +588,8 @@ class QAModeOrchestrator:
             "补充要求：所有问题都必须是用户直接能听懂的自然表达，"
             "禁止出现维度反馈、系统检测、模型判断、置信度、覆盖率、评分机制等内部术语，"
             "也不要说 rhythm、vocal_tone、content_quality、expression_structure、facial_expression、body 这类内部维度名。"
+            "不要反复追问“表达核心是什么”“核心结论是什么”这类泛问题；"
+            "如果上下文足够，就围绕最近提到的具体信息、证据、听众收获、取舍或下一步追问。"
             "第六，绝对不要自问自答，绝对不要替用户回答，绝对不要在问题后补充参考答案、提示语、解释、点评或过渡总结。"
             "第七，说出第一个完整问题后立刻停下，本轮输出必须结束。"
             f"你可参考的背景摘要：{summary}。"
@@ -596,13 +604,29 @@ class QAModeOrchestrator:
     def _flush_current_answer(self, session: QASessionState) -> str:
         if session.current_turn_id is None or not session.turns:
             return ""
-        answer_text = " ".join(chunk.strip() for chunk in session.current_answer_chunks if chunk.strip()).strip()
-        if not answer_text:
-            answer_text = (session.current_live_partial_answer or "").strip()
+        answer_text = self._compose_current_answer_text(session)
         if answer_text and session.turns[-1].turn_id == session.current_turn_id:
             session.turns[-1].answer_text = answer_text
         session.current_live_partial_answer = None
         return answer_text
+
+    @staticmethod
+    def _compose_current_answer_text(session: QASessionState) -> str:
+        chunks = [chunk.strip() for chunk in session.current_answer_chunks if chunk.strip()]
+        live_partial = (session.current_live_partial_answer or "").strip()
+        if not live_partial:
+            return " ".join(chunks).strip()
+        if not chunks:
+            return live_partial
+
+        committed_answer = " ".join(chunks).strip()
+        if live_partial == chunks[-1] or live_partial in chunks:
+            return committed_answer
+        if live_partial.startswith(chunks[-1]):
+            return " ".join([*chunks[:-1], live_partial]).strip()
+        if live_partial.startswith(committed_answer):
+            return live_partial
+        return f"{committed_answer} {live_partial}".strip()
 
     def _build_next_turn_plan(self, session: QASessionState, answer_text: str) -> QANextTurnPlan:
         current_question_index = session.current_question_index or 1
@@ -637,14 +661,6 @@ class QAModeOrchestrator:
     def _build_timeout_next_turn_plan(self, session: QASessionState) -> QANextTurnPlan:
         current_question_index = session.current_question_index or 1
         current_round_index = max(session.current_round_index, 1)
-        max_round_index = self._max_round_index(session)
-
-        if current_round_index < max_round_index:
-            return QANextTurnPlan(
-                action="follow_up",
-                question_index=current_question_index,
-                round_index=current_round_index + 1,
-            )
 
         if current_question_index < session.max_question_topics:
             return QANextTurnPlan(
@@ -822,7 +838,7 @@ class QAModeOrchestrator:
     def _default_expected_points(brief: ReferenceBrief | None) -> list[str]:
         if brief and brief.key_points:
             return brief.key_points[:3]
-        return ["核心结论", "关键依据", "听众价值"]
+        return ["具体判断", "关键依据", "听众收获"]
 
     def _expected_points_for_question(self, session: QASessionState, question_index: int) -> list[str]:
         focus = self._question_focus(session, question_index)
@@ -925,15 +941,15 @@ class QAModeOrchestrator:
     @staticmethod
     def _default_focus_templates(training_mode: TrainingMode) -> dict[str, QAQuestionFocus]:
         content_summary = (
-            "围绕演讲内容本身，确认主线、观点、论据和听众价值是否说清楚。"
+            "围绕演讲内容本身，确认表达落点、观点、论据和听众收获是否说清楚。"
             if training_mode == "document_speech"
-            else "围绕刚才表达的内容主线，确认观点、论据和听众价值是否清楚。"
+            else "围绕刚才表达的内容落点，确认观点、论据和听众收获是否清楚。"
         )
         return {
             "content": QAQuestionFocus(
-                title="内容主线",
+                title="表达落点",
                 summary=content_summary,
-                key_points=["核心结论", "支撑依据", "听众价值"],
+                key_points=["具体判断", "支撑依据", "听众收获"],
                 follow_up_angles=["主线是否清晰", "论据是否站得住", "落点是否对听众有价值"],
             ),
             "voice": QAQuestionFocus(
@@ -957,8 +973,8 @@ class QAModeOrchestrator:
 
         covered = [item.title for index, item in enumerate(session.question_focuses, start=1) if index < session.next_question_index]
         remaining = [item.title for index, item in enumerate(session.question_focuses, start=1) if index >= session.next_question_index]
-        key_points = "；".join(focus.key_points[:3]) or "核心点、关键依据、听众价值"
-        angles = "；".join(focus.follow_up_angles[:3]) or "概念是什么、为什么重要、如何在真实场景中使用"
+        key_points = "；".join(focus.key_points[:3]) or "具体判断、关键依据、听众收获"
+        angles = "；".join(focus.follow_up_angles[:3]) or "先挑一个判断、补充依据、说明和听众有什么关系"
         covered_text = "；".join(covered) if covered else "无"
         remaining_text = "；".join(remaining) if remaining else focus.title
         return (

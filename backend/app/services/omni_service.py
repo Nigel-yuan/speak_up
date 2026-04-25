@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import os
 import re
@@ -41,6 +42,8 @@ OMNI_ACCOUNT_ACCESS_DENIED_MARKER = "access denied, please make sure your accoun
 OMNI_INTERNAL_SERVICE_ERROR_MARKER = "internal service error"
 OMNI_BODY_BUFFER_TOO_SMALL_MARKER = "buffer too small, or have no audio"
 OMNI_BODY_APPEND_IMAGE_BEFORE_AUDIO_MARKER = "append image before append audio"
+OMNI_INPUT_SAMPLE_RATE = 16000
+OMNI_BODY_SILENCE_PAYLOAD_MS = 120
 
 
 def is_omni_account_access_denied(message: str) -> bool:
@@ -227,10 +230,11 @@ class AliyunOmniCoachService:
             return
         connection.latest_image_base64 = image_base64.split(",", 1)[-1]
         connection.latest_image_dirty = True
-        if not connection.has_received_audio:
-            return
         if self.turn_mode == "manual":
             await self._maybe_request_visual_refresh(connection)
+            return
+        if not connection.has_received_audio:
+            return
 
     async def finish_session(self, session_id: str) -> None:
         await self.close_session(session_id)
@@ -601,9 +605,9 @@ class AliyunOmniCoachService:
         scenario_label = SCENARIO_LABELS.get(scenario_id, "通用演讲训练")
         language_label = LANGUAGE_LABELS.get(language, "Chinese")
         example = (
-            '{"should_emit":true,"dimensions":{"body_expression":{"status":"adjust_now","headline":"先把手离开脸","detail":"手先回到脸外。","sub_dimension_id":"gesture_naturalness","signal_polarity":"negative","severity":"high","confidence":0.88,"evidence_text":"手挡住了脸"}}}'
+            '{"should_emit":true,"dimensions":{"body_expression":{"status":"adjust_now","headline":"头先回正","detail":"把头回到中线。","sub_dimension_id":"alignment","signal_polarity":"negative","severity":"medium","confidence":0.88,"evidence_text":"头明显偏向一侧"}}}'
             if language == "zh"
-            else '{"should_emit":true,"dimensions":{"body_expression":{"status":"adjust_now","headline":"Move your hand away","detail":"Keep your hand off your face.","sub_dimension_id":"gesture_naturalness","signal_polarity":"negative","severity":"high","confidence":0.88,"evidence_text":"hand is covering the face"}}}'
+            else '{"should_emit":true,"dimensions":{"body_expression":{"status":"adjust_now","headline":"Center your head","detail":"Bring your head back to center.","sub_dimension_id":"alignment","signal_polarity":"negative","severity":"medium","confidence":0.88,"evidence_text":"head is clearly tilted to one side"}}}'
         )
         return (
             "You are the body-expression lane of Speak Up AI Live Coach. "
@@ -621,25 +625,34 @@ class AliyunOmniCoachService:
             "Evaluate body_expression through six sub-areas: framing, alignment, openness or tension, gesture naturalness, movement or space use, and facial or eye engagement when visible. "
             "For framing, check whether the speaker is fully in frame, cut off, off-center, too far, too close, head-only, upper-body, or full-body. "
             "For alignment, check head tilt, shoulder tilt, upper-body lean, torso drift, and whether the speaker looks visibly slanted. "
+            "During QA or interviewer audio, nearby microphone audio may be silent or irrelevant; still judge body_expression from the current image frame. "
+            "If the head is clearly tilted to one side, the shoulders are visibly slanted, or the upper body leans hard to one side in the current frame, emit adjust_now with sub_dimension_id alignment. "
+            "For obvious head tilt or side lean, do not wait for multiple frames; the current visible posture is enough evidence. "
             "For openness or tension, check whether the upper body looks open and settled, or tight, lifted, collapsed, closed, or overly guarded. "
             "For gesture naturalness, check whether gestures are missing, too frequent, too fragmented, unsynced with the point, blocking the face, or frozen. "
+            "Only treat a hand as blocking the face when a hand or object visibly overlaps or hides the mouth, nose, eyes, chin, or a large part of the face in the current frame. "
+            "Do not warn about face blocking when a hand is merely near the face, near the frame edge, briefly passing through, or used as a normal emphasis gesture without occlusion. "
             "Do not treat a brief upward hand, upward fist, or lifted emphasis gesture as a problem when it clearly matches a strong positive line, a celebratory beat, or a confident emphasis point. "
-            "Only warn about a raised hand when it stays too high for too long, blocks the face, becomes repetitive, or feels disconnected from the spoken point. "
+            "Only warn about a raised hand when the hand, wrist, or forearm is clearly visible above shoulder height or beside the ear for a sustained moment and the gesture is disconnected from the spoken point. "
+            "Do not tell the speaker to lower a hand from the ear or face unless the hand is plainly visible there; never infer this from a cropped edge, hair, headphone, shadow, skin-colored blur, or one weak frame. "
+            "If hand position evidence is ambiguous, use analyzing or choose a clearer framing or alignment cue instead of a specific hand-position correction. "
             "When the nearby audio is clearly excited, upbeat, or celebratory, a bigger gesture, brighter face, stronger lift, or brief emphatic motion can be a good match rather than a problem. "
             "When the nearby audio is clearly serious, reflective, or emotionally lowered, a calmer, smaller, or lower-energy body state can still be appropriate if it looks intentional, stable, and engaged rather than collapsed or withdrawn. "
             "For movement or space use, only judge this when the frame is wide enough. Look for random swaying, pacing without purpose, or useful movement that supports the delivery. "
             "For facial or eye engagement, only judge this when the face is clear enough. Look for long downward gaze, obvious screen-checking, visible tension, very flat expression, or clear audience connection. "
-            "Also watch for immediate bad habits: hand on face, holding an object in front of the face, long head-down posture, persistent head tilt, and clearly drifting out of frame. "
-            "If only the head is visible but the face is still clear enough, you may still judge face-blocking, hand-on-face, downward gaze, head tilt, facial tension, and eye engagement. "
+            "Also watch for immediate bad habits: a hand or object visibly covering the face, long head-down posture, persistent head tilt, and clearly drifting out of frame. "
+            "If only the head is visible but the face is still clear enough, you may still judge clear face occlusion, downward gaze, head tilt, facial tension, and eye engagement. "
             "Use analyzing only when both upper-body and face evidence are too weak to support a reliable judgment. "
             "Be conservative. Only use adjust_now when there is clear visible evidence right now. "
-            "If the speaker is covering the face with a hand or object for a sustained moment, use adjust_now instead of analyzing. "
+            "If the speaker is visibly covering the face with a hand or object for a sustained moment, use adjust_now instead of analyzing. "
             "If the head stays tilted, the gaze stays down, or the speaker stays visibly off-center for a sustained moment, use adjust_now instead of analyzing. "
+            "If the head is already severely tilted or the face is clearly angled far to one side, use adjust_now immediately instead of stable or should_emit=false. "
             "Do not use vague body advice such as '别乱比划', '肢体不自然', or '状态不太对'. "
             "Instead, name the concrete visible issue and one immediate action. "
-            "Bad: '手放下别乱比划'. Good: '手先离开脸，动作收回胸前'. "
+            "Bad: '手放下别乱比划'. Good: '手势先收回胸前'. "
             "Bad: '站姿不自然'. Good: '身体偏左，先回到镜头中间'. "
-            "Bad: '手举太高了，放下来' for one short celebratory fist that supports the line. Good: keep it neutral or positive unless the hand stays high, blocks the face, or distracts from the point. "
+            "Bad: '手从耳边放下来' when the hand is not plainly visible at the ear. Good: use analyzing or a clearer visible cue. "
+            "Bad: '手举太高了，放下来' for one short celebratory fist that supports the line. Good: keep it neutral or positive unless the hand clearly stays high, blocks the face, or distracts from the point. "
             "Do not comment on full-body movement if the frame only shows the head or upper body. "
             "Do not jump to a strong posture claim from one weak frame. Prefer analyzing when the evidence is partial. "
             "Choose the single most important visible body issue right now and give the shortest action that can be done immediately. "
@@ -676,7 +689,10 @@ class AliyunOmniCoachService:
                     return
                 audio_payloads = self._collect_recent_body_audio_payloads(connection)
                 if len(audio_payloads) < self.body_audio_min_payloads:
-                    return
+                    audio_payloads = [
+                        *audio_payloads,
+                        *self._build_silence_audio_payloads(self.body_audio_min_payloads - len(audio_payloads)),
+                    ]
 
                 image_base64 = connection.latest_image_base64
                 connection.latest_image_dirty = False
@@ -728,6 +744,14 @@ class AliyunOmniCoachService:
             if timestamp >= cutoff
         ]
         return [payload for _, payload in connection.buffered_audio_payloads]
+
+    @staticmethod
+    def _build_silence_audio_payloads(count: int) -> list[str]:
+        if count <= 0:
+            return []
+        sample_count = max(1, int(OMNI_INPUT_SAMPLE_RATE * OMNI_BODY_SILENCE_PAYLOAD_MS / 1000))
+        payload = base64.b64encode(b"\x00\x00" * sample_count).decode("ascii")
+        return [payload] * count
 
     def _build_url(self) -> str:
         encoded_model = quote(self.model, safe="")

@@ -48,6 +48,7 @@
 - `src/hooks/useMockSession.ts`
   - WebSocket 客户端
   - 麦克风采集
+  - 主讲人能量门控和浏览器侧降噪约束
   - QA 音频流播放和播放状态回传
 
 ## 3. 运行时流程
@@ -111,18 +112,31 @@
 ### 3.4 用户回答
 
 1. 用户音频继续走 ASR
-2. partial transcript 先写入 `current_live_partial_answer`
-3. final transcript 再落到 `current_answer_chunks`
-4. `speech_started` / `speech_stopped` 由 STT provider event 驱动
+2. 前端音频入口先执行浏览器侧 `echoCancellation / noiseSuppression / autoGainControl`
+3. 前端再执行主讲人能量门控：
+   - 100ms PCM chunk 会计算 RMS
+   - 动态跟踪当前最强近场人声作为主讲人能量基线
+   - 低于动态阈值的 chunk 会替换成等长静音
+   - 等长静音保留时间轴，让后端 ASR / VAD 仍能判断停顿
+4. partial transcript 先写入 `current_live_partial_answer`
+5. final transcript 再落到 `current_answer_chunks`
+6. `speech_started` / `speech_stopped` 由 STT provider event 驱动
 
 ### 3.5 自动推进
 
-- 如果 `speech_stopped` 后当前答案不是空/语气词：
-  - 直接进入 `QA_AUTO_ADVANCE_DELAY_MS`
-  - 当前默认是 `1200ms`
+- 如果用户回答已经有实质内容：
+  - final transcript / `speech_stopped` 会刷新 `QA_AUTO_ADVANCE_DELAY_MS`
+  - 当前默认是 `2000ms`，表示回答停止更新约 2 秒后进入下一轮
+  - partial transcript 不再直接使用 2 秒快路径，而是使用 `QA_PARTIAL_STABILITY_ADVANCE_DELAY_MS`
+  - 当前 partial 稳定窗口默认是 `4500ms`，避免用户还在连续说话时被提前推进
+  - 如果 STT 仍认为用户处于 `speech_started` 状态，auto advance 会按 `QA_SPEECH_ACTIVE_RECHECK_MS` 反复复查；只有文本活动静默超过 `QA_SPEECH_ACTIVE_AUTO_ADVANCE_GRACE_MS` 才允许放行
+- 如果回答里包含结束口令：
+  - 例如“我说完了 / 说完了 / 我回答完了 / 就这么多 / 就这样 / 以上”
+  - 会走 `qa.finish_command`，当前默认 `350ms` 后提交当前回答
 - 如果长时间没有有效回答：
   - 进入 `QA_SILENCE_FALLBACK_DELAY_MS`
   - 当前默认是 `10000ms`
+  - 无有效回答时跳过当前题，进入下一题；如果已到最后一题则结束问答
 
 ## 4. 判题与跳转规则
 
@@ -175,6 +189,11 @@
 
 - 文档当前只参与 QA
 - Live Coach 仍然只看实时音视频与 transcript
+- QA 提问或 AI 教练口播期间，前端会隔离用户麦克风音频以避免混入 AI 声音；body visual lane 会用短静音兜底触发视觉刷新，保证偏出镜头、挡脸等纯视觉问题仍能更新到 Live Analysis
+- QA 默认首问和兜底追问不再反复问“表达核心是什么”；摘要不足时优先问具体判断、支撑依据和听众收获
+- QA 用户回答阶段会识别“我说完了 / 回答完了 / 就这么多 / 以上”等结束口令，绕过嘈杂环境下 VAD 不触发 `speech_stopped` 的问题，主动进入下一轮
+- QA 自动进入下一问要求回答达到最小有效长度；“嗯 / 啊 / 哦 / 好”等短噪声或语气词不会触发 `qa.auto_advance`
+- 当前主讲人过滤是前端能量门控，不是完整声纹分离；如果背景人声比主讲人更大，仍可能被保留。后续声纹分离应在送 ASR 前增加主讲人 embedding 校验。
 
 ## 6. 关键日志
 
@@ -185,6 +204,8 @@
 - `qa.realtime.turn_started`
 - `qa.asr.speech_started / speech_stopped`
 - `qa.auto_advance.schedule / fire / cancel`
+- `qa.auto_advance.defer / allow / skip`
+- `qa.finish_command.schedule / fire / cancel`
 - `qa.silence_fallback.schedule / fire / cancel`
 - `qa.audio_playback.started / ended`
 - `qa.realtime.user_turn_committed`
@@ -196,7 +217,13 @@
 - `QA_PREWARM_INTERVAL_SECONDS=20`
 - `QA_PREWARM_TRIGGER_DELAY_MS=1500`
 - `QA_PREWARM_MIN_CHARS=120`
-- `QA_AUTO_ADVANCE_DELAY_MS=1200`
+- `QA_AUTO_ADVANCE_DELAY_MS=2000`
+- `QA_PARTIAL_STABILITY_ADVANCE_DELAY_MS=4500`
+- `QA_SPEECH_ACTIVE_RECHECK_MS=500`
+- `QA_SPEECH_ACTIVE_AUTO_ADVANCE_GRACE_MS=4500`
+- `QA_MIN_AUTO_ADVANCE_ZH_CHARS=4`
+- `QA_MIN_AUTO_ADVANCE_EN_WORDS=3`
+- `QA_FINISH_COMMAND_DELAY_MS=350`
 - `QA_RESPONSE_DONE_AUDIO_GRACE_MS=1200`
 - `QA_SILENCE_FALLBACK_DELAY_MS=10000`
 - `QA_PREWARM_MIN_DELTA_CHARS=40`

@@ -18,6 +18,7 @@ import { useMockSession } from "@/hooks/useMockSession";
 import { extractDocumentText, uploadSessionReplayMedia } from "@/lib/api";
 import type {
   CoachProfileId,
+  LanguageOption,
   ScenarioType,
   TrainingDocumentAsset,
   TrainingMode,
@@ -67,6 +68,32 @@ function buildReplayFilename(mimeType: string) {
     return "replay-video.mp4";
   }
   return "replay-video.webm";
+}
+
+const QA_START_FILLER_TOKENS = {
+  zh: new Set(["嗯", "啊", "额", "呃", "哦", "诶", "欸", "哎", "唉", "好", "好的", "嗯嗯", "哦哦", "hmm", "hm", "hmmm", "mhm", "mm"]),
+  en: new Set(["um", "uh", "well", "so", "ok", "okay", "sure", "got", "it", "hmm", "hm", "hmmm", "mhm", "mm"]),
+};
+
+function normalizeQAStartText(text: string) {
+  return text.trim().toLowerCase().replace(/[\s,.!?，。！？、…:：;；"'“”‘’（）()\-]/g, "");
+}
+
+function hasSubstantiveQAStartText(language: LanguageOption, text: string) {
+  const normalized = normalizeQAStartText(text);
+  if (!normalized || QA_START_FILLER_TOKENS[language].has(normalized)) {
+    return false;
+  }
+  if (language === "zh") {
+    return normalized.length >= 8;
+  }
+
+  const words = text
+    .trim()
+    .toLowerCase()
+    .split(/[\s,.!?;:]+/)
+    .filter((word) => word && !QA_START_FILLER_TOKENS.en.has(word));
+  return words.length >= 3;
 }
 
 export function SessionWorkspace({
@@ -191,7 +218,6 @@ export function SessionWorkspace({
     statusText,
     transcript,
     qaAudioUrl,
-    qaFeedback,
     qaQuestion,
     qaState,
     qaAudioAutoPlay,
@@ -335,6 +361,18 @@ export function SessionWorkspace({
       statusText,
     [documentError, documentLoading, error, sessionError, statusText],
   );
+  const qaStartContextReady = useMemo(() => {
+    const documentText = documentAsset?.extractedText ?? documentAsset?.markdownSource ?? "";
+    if (documentText.trim()) {
+      return true;
+    }
+
+    const userTranscriptText = transcript
+      .filter((chunk) => chunk.speaker === "user")
+      .map((chunk) => chunk.text)
+      .join(" ");
+    return hasSubstantiveQAStartText(language, userTranscriptText);
+  }, [documentAsset?.extractedText, documentAsset?.markdownSource, language, transcript]);
 
   useEffect(() => {
     return () => {
@@ -449,7 +487,15 @@ export function SessionWorkspace({
   ]);
 
   useEffect(() => {
-    if (!qaEnabled || qaStoppedByUser || !isRunning || controlsDisabled || qaState.enabled || qaState.phase !== "idle") {
+    if (
+      !qaEnabled ||
+      qaStoppedByUser ||
+      !isRunning ||
+      controlsDisabled ||
+      qaState.enabled ||
+      qaState.phase !== "idle" ||
+      !qaStartContextReady
+    ) {
       return;
     }
 
@@ -459,6 +505,7 @@ export function SessionWorkspace({
     isRunning,
     launchQA,
     qaEnabled,
+    qaStartContextReady,
     qaState.enabled,
     qaState.phase,
     qaStoppedByUser,
@@ -595,7 +642,6 @@ export function SessionWorkspace({
   const activeCoachProfile = getCoachProfileById(activeCoachProfileId) ?? coachProfiles[0] ?? null;
   const avatarSrc = activeCoachProfile?.avatarSrc ?? "/avatars/interviewer-female.svg";
   const qaEnded = qaStoppedByUser || qaState.phase === "completed";
-  const displayedGoal = qaEnded ? null : qaState.currentQuestionGoal;
   const displayedQuestion = qaEnded
     ? {
         turnId: qaState.currentTurnId ?? "qa-ended",
@@ -621,17 +667,16 @@ export function SessionWorkspace({
               followUp: false,
               expectedPoints: [],
             }
+          : qaEnabled && !qaStartContextReady
+            ? {
+                turnId: "qa-waiting-context",
+                questionText: "先完成一段有效表达，AI 会在识别到内容后开始问答。",
+                goal: "等待一段可追问的演讲内容。",
+                followUp: false,
+                expectedPoints: [],
+              }
           : null);
   const displayedQAPhase = qaEnded ? "completed" : qaState.phase;
-  const displayedFeedback = qaFeedback ?? (qaState.latestFeedback
-    ? {
-        turnId: qaState.currentTurnId ?? "qa-current",
-        feedbackText: qaState.latestFeedback,
-        strengths: [],
-        missedPoints: [],
-        nextAction: "next_question" as const,
-      }
-    : null);
 
   return (
     <main className="h-screen overflow-hidden bg-slate-100 p-4 text-slate-950 md:p-5">
@@ -685,8 +730,6 @@ export function SessionWorkspace({
               controls={null}
               documentAsset={documentAsset}
               elapsedSeconds={elapsedSeconds}
-              feedback={displayedFeedback}
-              goal={displayedGoal}
               isRunning={isRunning && !controlsDisabled}
               phase={displayedQAPhase}
               qaAudioUrl={qaAudioUrl}

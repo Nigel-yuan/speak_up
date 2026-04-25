@@ -37,6 +37,14 @@ interface FlushResult {
   committed: TranscriptChunk[];
 }
 
+interface MainSpeakerAudioGateState {
+  dominantRms: number;
+  noiseFloorRms: number;
+  lastAcceptedAtMs: number;
+  acceptedFrames: number;
+  suppressedFrames: number;
+}
+
 const idleSessionState: SessionState = {
   error: null,
   isConnecting: false,
@@ -50,6 +58,24 @@ const PCM_CHUNK_DURATION_MS = 100;
 const PCM_SAMPLE_RATE = 16000;
 const PCM_WORKLET_MODULE_PATH = "/audio/pcm-capture.worklet.js";
 const VIDEO_FRAME_INTERVAL_MS = 1000;
+const AUDIO_CAPTURE_CONSTRAINTS: MediaStreamConstraints = {
+  audio: {
+    channelCount: { ideal: PCM_CHANNELS },
+    echoCancellation: { ideal: true },
+    noiseSuppression: { ideal: true },
+    autoGainControl: { ideal: true },
+    sampleRate: { ideal: PCM_SAMPLE_RATE },
+    sampleSize: { ideal: 16 },
+  },
+  video: false,
+};
+const MAIN_SPEAKER_GATE_ABSOLUTE_SILENCE_RMS = 0.0025;
+const MAIN_SPEAKER_GATE_MIN_VOICE_RMS = 0.006;
+const MAIN_SPEAKER_GATE_DOMINANT_RATIO = 0.32;
+const MAIN_SPEAKER_GATE_NOISE_RATIO = 2.4;
+const MAIN_SPEAKER_GATE_TRAILING_RATIO = 0.62;
+const MAIN_SPEAKER_GATE_TRAILING_MS = 650;
+const MAIN_SPEAKER_GATE_DOMINANT_DECAY = 0.996;
 const PARTIAL_FILLER_TOKENS = {
   en: new Set(["um", "uh", "well", "so", "hmm", "hm", "hmmm", "mhm", "mm"]),
   zh: new Set(["嗯", "啊", "额", "呃", "然后", "就是", "哦", "诶", "欸", "哎", "唉", "hmm", "hm", "hmmm", "mhm", "mm"]),
@@ -72,6 +98,16 @@ function createEmptyTranscriptState(): TranscriptStateRef {
   return {
     active: null,
     committed: [],
+  };
+}
+
+function createMainSpeakerAudioGateState(): MainSpeakerAudioGateState {
+  return {
+    dominantRms: 0,
+    noiseFloorRms: MAIN_SPEAKER_GATE_ABSOLUTE_SILENCE_RMS,
+    lastAcceptedAtMs: 0,
+    acceptedFrames: 0,
+    suppressedFrames: 0,
   };
 }
 
@@ -160,6 +196,80 @@ function resampleFloat32(samples: Float32Array, sourceRate: number, targetRate: 
   }
 
   return resampled;
+}
+
+function calculateRms(samples: Float32Array) {
+  if (samples.length === 0) {
+    return 0;
+  }
+
+  let sum = 0;
+  for (let index = 0; index < samples.length; index += 1) {
+    const sample = samples[index] ?? 0;
+    sum += sample * sample;
+  }
+
+  return Math.sqrt(sum / samples.length);
+}
+
+function updateMainSpeakerNoiseFloor(state: MainSpeakerAudioGateState, rms: number) {
+  const boundedRms = Math.max(rms, MAIN_SPEAKER_GATE_ABSOLUTE_SILENCE_RMS);
+  const nextNoiseFloor = state.noiseFloorRms * 0.94 + boundedRms * 0.06;
+  state.noiseFloorRms = Math.min(
+    Math.max(nextNoiseFloor, MAIN_SPEAKER_GATE_ABSOLUTE_SILENCE_RMS),
+    MAIN_SPEAKER_GATE_MIN_VOICE_RMS * 1.5,
+  );
+}
+
+function acceptMainSpeakerFrame(state: MainSpeakerAudioGateState, rms: number, nowMs: number) {
+  const attack = rms >= state.dominantRms ? 0.28 : 0.04;
+  state.dominantRms = state.dominantRms * (1 - attack) + rms * attack;
+  state.noiseFloorRms = Math.min(
+    state.noiseFloorRms * 0.995 + MAIN_SPEAKER_GATE_ABSOLUTE_SILENCE_RMS * 0.005,
+    Math.max(state.dominantRms * 0.5, MAIN_SPEAKER_GATE_ABSOLUTE_SILENCE_RMS),
+  );
+  state.lastAcceptedAtMs = nowMs;
+  state.acceptedFrames += 1;
+}
+
+function applyMainSpeakerAudioGate(
+  samples: Float32Array,
+  state: MainSpeakerAudioGateState,
+  nowMs = typeof performance !== "undefined" ? performance.now() : Date.now(),
+) {
+  if (samples.length === 0) {
+    return samples;
+  }
+
+  const rms = calculateRms(samples);
+  state.dominantRms = Math.max(
+    state.dominantRms * MAIN_SPEAKER_GATE_DOMINANT_DECAY,
+    MAIN_SPEAKER_GATE_MIN_VOICE_RMS,
+  );
+
+  if (rms <= MAIN_SPEAKER_GATE_ABSOLUTE_SILENCE_RMS) {
+    updateMainSpeakerNoiseFloor(state, rms);
+    state.suppressedFrames += 1;
+    return new Float32Array(samples.length);
+  }
+
+  const threshold = Math.max(
+    MAIN_SPEAKER_GATE_MIN_VOICE_RMS,
+    state.noiseFloorRms * MAIN_SPEAKER_GATE_NOISE_RATIO,
+    state.dominantRms * MAIN_SPEAKER_GATE_DOMINANT_RATIO,
+  );
+  const recentlyAccepted = nowMs - state.lastAcceptedAtMs <= MAIN_SPEAKER_GATE_TRAILING_MS;
+  const accepted =
+    rms >= threshold || (recentlyAccepted && rms >= threshold * MAIN_SPEAKER_GATE_TRAILING_RATIO);
+
+  if (!accepted) {
+    updateMainSpeakerNoiseFloor(state, rms);
+    state.suppressedFrames += 1;
+    return new Float32Array(samples.length);
+  }
+
+  acceptMainSpeakerFrame(state, rms, nowMs);
+  return samples;
 }
 
 function isFillerPartial(partialText: string, language: SessionSetup["language"]) {
@@ -360,6 +470,7 @@ export function useMockSession(setup: SessionSetup) {
   const qaStateRef = useRef<QAState>(idleQAState);
   const [sessionState, setSessionState] = useState<SessionState>(idleSessionState);
   const transcriptStateRef = useRef<TranscriptStateRef>(createEmptyTranscriptState());
+  const mainSpeakerAudioGateRef = useRef<MainSpeakerAudioGateState>(createMainSpeakerAudioGateState());
 
   const clearSocket = useCallback(() => {
     socketRef.current?.close();
@@ -426,6 +537,7 @@ export function useMockSession(setup: SessionSetup) {
   const clearSessionView = useCallback(() => {
     destroyQAAudioOutput();
     transcriptStateRef.current = createEmptyTranscriptState();
+    mainSpeakerAudioGateRef.current = createMainSpeakerAudioGateState();
     sessionStartedAtRef.current = null;
     setIsRunning(false);
     setAudioCaptureStream(null);
@@ -719,7 +831,8 @@ export function useMockSession(setup: SessionSetup) {
           return;
         }
 
-        const pcm16 = float32ToPcm16(normalizedSamples);
+        const gatedSamples = applyMainSpeakerAudioGate(normalizedSamples, mainSpeakerAudioGateRef.current);
+        const pcm16 = float32ToPcm16(gatedSamples);
         const payload = encodeBase64(new Uint8Array(pcm16.buffer));
 
         sendRealtimeMessage({
@@ -741,7 +854,8 @@ export function useMockSession(setup: SessionSetup) {
   );
 
   const startAudioCapture = useCallback(async () => {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    mainSpeakerAudioGateRef.current = createMainSpeakerAudioGateState();
+    const stream = await navigator.mediaDevices.getUserMedia(AUDIO_CAPTURE_CONSTRAINTS);
     audioStreamRef.current = stream;
 
     try {

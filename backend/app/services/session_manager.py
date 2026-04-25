@@ -112,6 +112,51 @@ class SessionManager:
         },
         "en": {"um", "uh", "well", "so", "ok", "okay", "sure", "got it", "hmm", "hm", "hmmm", "mhm", "mm"},
     }
+    QA_ANSWER_FINISH_COMMANDS = {
+        "zh": {
+            "我说完了",
+            "说完了",
+            "我讲完了",
+            "讲完了",
+            "我回答完了",
+            "回答完了",
+            "答完了",
+            "我的回答结束了",
+            "回答结束了",
+            "就这些",
+            "就这么多",
+            "就这样",
+            "以上",
+            "差不多了",
+            "说到这里",
+            "先说到这里",
+            "就到这里",
+            "我的回答就到这里",
+            "回答就到这里",
+            "下一题",
+            "下一个问题",
+            "可以下一题",
+            "进入下一题",
+        },
+        "en": {
+            "i am done",
+            "i'm done",
+            "i finished",
+            "i have finished",
+            "my answer is done",
+            "that is all",
+            "that's all",
+            "all done",
+            "next question",
+            "go next",
+            "move on",
+        },
+    }
+    QA_ANSWER_FINISH_NEGATIONS = {
+        "zh": {"没说完", "没有说完", "还没说完", "还没有说完", "没讲完", "还没讲完", "没有讲完", "没回答完", "还没回答完"},
+        "en": {"not done", "not finished", "haven't finished", "have not finished", "not yet"},
+    }
+    QA_AUTO_ADVANCE_TRIGGER_REASONS = {"asr_speech_stopped", "user_transcript_final", "user_transcript_merged"}
 
     def __init__(self) -> None:
         self.sessions: dict[str, SessionRecord] = {}
@@ -119,16 +164,40 @@ class SessionManager:
         self.qa_prewarm_refresh_tasks: dict[str, asyncio.Task[None]] = {}
         self.qa_auto_advance_tasks: dict[str, asyncio.Task[None]] = {}
         self.qa_silence_fallback_tasks: dict[str, asyncio.Task[None]] = {}
+        self.qa_finish_command_tasks: dict[str, asyncio.Task[None]] = {}
         self.qa_active_audio_turns: dict[str, str] = {}
         self.qa_pending_response_done: dict[str, tuple[str, str]] = {}
         self.qa_response_done_grace_tasks: dict[str, asyncio.Task[None]] = {}
         self.qa_answer_audio_started_at_ms: dict[str, int] = {}
+        self.qa_answer_window_opened_at_ms: dict[str, int] = {}
+        self.qa_answer_activity_sequences: dict[str, int] = {}
+        self.qa_answer_text_activity_at_monotonic: dict[str, float] = {}
+        self.qa_user_speech_started_at_monotonic: dict[str, float] = {}
+        self.qa_user_speech_active_sessions: set[str] = set()
         self.qa_prewarm_interval_seconds = max(5, int(os.getenv("QA_PREWARM_INTERVAL_SECONDS", "20")))
         self.qa_prewarm_trigger_delay_seconds = max(
             0.0,
             float(os.getenv("QA_PREWARM_TRIGGER_DELAY_MS", "1500")) / 1000,
         )
-        self.qa_auto_advance_delay_seconds = max(1.0, float(os.getenv("QA_AUTO_ADVANCE_DELAY_MS", "1200")) / 1000)
+        self.qa_auto_advance_delay_seconds = max(0.5, float(os.getenv("QA_AUTO_ADVANCE_DELAY_MS", "2000")) / 1000)
+        self.qa_partial_stability_delay_seconds = max(
+            self.qa_auto_advance_delay_seconds,
+            float(os.getenv("QA_PARTIAL_STABILITY_ADVANCE_DELAY_MS", "4500")) / 1000,
+        )
+        self.qa_speech_active_recheck_seconds = max(
+            0.1,
+            float(os.getenv("QA_SPEECH_ACTIVE_RECHECK_MS", "500")) / 1000,
+        )
+        self.qa_speech_active_auto_advance_grace_seconds = max(
+            self.qa_auto_advance_delay_seconds,
+            float(os.getenv("QA_SPEECH_ACTIVE_AUTO_ADVANCE_GRACE_MS", "4500")) / 1000,
+        )
+        self.qa_min_auto_advance_zh_chars = max(4, int(os.getenv("QA_MIN_AUTO_ADVANCE_ZH_CHARS", "4")))
+        self.qa_min_auto_advance_en_words = max(2, int(os.getenv("QA_MIN_AUTO_ADVANCE_EN_WORDS", "3")))
+        self.qa_finish_command_delay_seconds = max(
+            0.1,
+            float(os.getenv("QA_FINISH_COMMAND_DELAY_MS", "350")) / 1000,
+        )
         self.qa_response_done_audio_grace_seconds = max(
             0.2,
             float(os.getenv("QA_RESPONSE_DONE_AUDIO_GRACE_MS", "1200")) / 1000,
@@ -365,18 +434,38 @@ class SessionManager:
             return
 
         if message.type == "start_qa":
+            training_mode = message.training_mode or "free_speech"
             logger.info(
                 "qa.start_request session=%s mode=%s transcript_chunks=%s has_document=%s has_manual=%s",
                 session.session_id,
-                message.training_mode or "free_speech",
+                training_mode,
                 len(session.transcript_chunks),
                 bool(message.document_text),
                 bool(message.manual_text),
             )
+            if not self._has_qa_start_context(
+                session,
+                training_mode=training_mode,
+                document_text=message.document_text,
+                manual_text=message.manual_text,
+            ):
+                logger.info(
+                    "qa.start_rejected session=%s reason=no_substantive_context mode=%s transcript_chunks=%s",
+                    session.session_id,
+                    training_mode,
+                    len(session.transcript_chunks),
+                )
+                await websocket.send_json(
+                    ErrorEvent(message="先完成一段有效表达，或上传文档后再进入问答。").model_dump()
+                )
+                await websocket.send_json(
+                    QAStateEvent(qaState=self.qa_mode_orchestrator.get_state(session.session_id)).model_dump()
+                )
+                return
             self._clear_qa_runtime_state(session.session_id)
             events = self.qa_mode_orchestrator.prepare_start_qa(
                 session_id=session.session_id,
-                training_mode=message.training_mode or "free_speech",
+                training_mode=training_mode,
                 voice_profile_id=message.voice_profile_id,
                 document_name=message.document_name,
                 document_text=message.document_text,
@@ -385,7 +474,7 @@ class SessionManager:
             logger.info(
                 "qa.context.ready session=%s entered_ai_qa=true mode=%s document_name=%s document_chars=%s manual_chars=%s",
                 session.session_id,
-                message.training_mode or "free_speech",
+                training_mode,
                 message.document_name or "-",
                 len(message.document_text or ""),
                 len(message.manual_text or ""),
@@ -477,10 +566,24 @@ class SessionManager:
         await self._broadcast(session, RealtimeStatusEvent(sessionId=session.session_id, status=session.status).model_dump())
 
     async def broadcast_partial(self, session: SessionRecord, text: str) -> None:
-        if text.strip() and self.qa_mode_orchestrator.is_user_answering(session.session_id):
-            self.qa_mode_orchestrator.update_live_partial_answer(session.session_id, text)
-            self._cancel_qa_auto_advance_task(session.session_id)
-            self._schedule_qa_silence_fallback(session, reason="user_partial")
+        stripped_text = text.strip()
+        if stripped_text and self.qa_mode_orchestrator.is_user_answering(session.session_id):
+            current_answer = self._current_qa_answer_text(session.session_id)
+            if (
+                self._is_empty_or_filler_qa_answer(session.language, stripped_text)
+                and not self._is_empty_or_filler_qa_answer(session.language, current_answer)
+            ):
+                logger.info(
+                    "qa.user_partial.ignore_filler_after_answer session=%s text=%s",
+                    session.session_id,
+                    stripped_text[:80],
+                )
+                self._bump_qa_answer_activity_sequence(session.session_id)
+                self._refresh_qa_answer_timers(session, reason="user_partial")
+            else:
+                self.qa_mode_orchestrator.update_live_partial_answer(session.session_id, stripped_text)
+                self._bump_qa_answer_activity_sequence(session.session_id)
+                self._refresh_qa_answer_timers(session, reason="user_partial")
         await self._maybe_broadcast_speech_preview(session, text)
         await self._broadcast(session, TranscriptPartialEvent(text=text).model_dump())
 
@@ -522,17 +625,11 @@ class SessionManager:
             accepted_for_qa = self._accept_qa_user_transcript(session, merged_chunk)
             if accepted_for_qa:
                 self.qa_mode_orchestrator.replace_last_transcript_chunk(session.session_id, merged_chunk)
+                self._bump_qa_answer_activity_sequence(session.session_id)
             if merged_chunk.speaker == "user" and session.status == "streaming":
                 self._schedule_qa_prewarm_refresh(session.session_id, reason="transcript_merged")
-            if (
-                accepted_for_qa
-                and self.qa_mode_orchestrator.qa_omni_service.has_pending_user_audio(session.session_id)
-            ):
-                if self._should_auto_advance_qa_answer(session):
-                    self._ensure_qa_auto_advance_scheduled(session, reason="user_transcript_merged")
-                else:
-                    self._cancel_qa_auto_advance_task(session.session_id)
-                self._schedule_qa_silence_fallback(session, reason="user_transcript_merged")
+            if accepted_for_qa:
+                self._refresh_qa_answer_timers(session, reason="user_transcript_merged")
             speech_update = self.speech_analysis_service.replace_last_chunk(
                 session.session_id,
                 session.language,
@@ -555,17 +652,11 @@ class SessionManager:
         accepted_for_qa = self._accept_qa_user_transcript(session, chunk)
         if accepted_for_qa:
             self.qa_mode_orchestrator.ingest_transcript_chunk(session.session_id, chunk)
+            self._bump_qa_answer_activity_sequence(session.session_id)
         if chunk.speaker == "user" and session.status == "streaming":
             self._schedule_qa_prewarm_refresh(session.session_id, reason="transcript_final")
-        if (
-            accepted_for_qa
-            and self.qa_mode_orchestrator.qa_omni_service.has_pending_user_audio(session.session_id)
-        ):
-            if self._should_auto_advance_qa_answer(session):
-                self._ensure_qa_auto_advance_scheduled(session, reason="user_transcript_final")
-            else:
-                self._cancel_qa_auto_advance_task(session.session_id)
-            self._schedule_qa_silence_fallback(session, reason="user_transcript_final")
+        if accepted_for_qa:
+            self._refresh_qa_answer_timers(session, reason="user_transcript_final")
         speech_update = self.speech_analysis_service.ingest_chunk(session.session_id, session.language, chunk)
         coach_panel = self.coach_panel_service.update_from_speech(
             session.session_id,
@@ -859,7 +950,7 @@ class SessionManager:
             raise RuntimeError("QA Omni Realtime 未能触发首问")
         logger.info("qa.realtime.bootstrap session=%s", session.session_id)
 
-    async def _commit_qa_user_turn(self, session: SessionRecord) -> None:
+    async def _commit_qa_user_turn(self, session: SessionRecord, *, allow_silent_fallback: bool = False) -> None:
         plan, events = self.qa_mode_orchestrator.prepare_after_answer(session_id=session.session_id)
         for event in events:
             await self._broadcast_runtime_event(session, event)
@@ -873,7 +964,10 @@ class SessionManager:
             )
             return
         await self._refresh_qa_realtime_instructions(session, wait_for_provider_ack=False)
-        committed = await self.qa_mode_orchestrator.qa_omni_service.commit_user_turn(session.session_id)
+        if allow_silent_fallback and not self.qa_mode_orchestrator.qa_omni_service.has_pending_user_audio(session.session_id):
+            committed = await self.qa_mode_orchestrator.qa_omni_service.commit_silent_user_turn(session.session_id)
+        else:
+            committed = await self.qa_mode_orchestrator.qa_omni_service.commit_user_turn(session.session_id)
         if not committed:
             raise RuntimeError("QA Omni Realtime 当前没有可提交的用户音频")
         logger.info(
@@ -1100,19 +1194,21 @@ class SessionManager:
             start_ms = metadata.get("startMs") if metadata else None
             if isinstance(start_ms, int):
                 self.qa_answer_audio_started_at_ms[session_id] = start_ms
-            self._cancel_qa_auto_advance_task(session_id)
+            self.qa_user_speech_active_sessions.add(session_id)
+            self.qa_user_speech_started_at_monotonic[session_id] = monotonic()
             logger.info("qa.asr.speech_started session=%s start_ms=%s", session_id, start_ms)
             return
 
         if stage == "speech_stopped":
+            self.qa_user_speech_active_sessions.discard(session_id)
+            self.qa_user_speech_started_at_monotonic.pop(session_id, None)
             answer_text = self._current_qa_answer_text(session_id)
             logger.info(
                 "qa.asr.speech_stopped session=%s answer_chars=%s",
                 session_id,
                 len(re.sub(r"\s+", "", answer_text)),
             )
-            if self._should_auto_advance_qa_answer(session):
-                self._ensure_qa_auto_advance_scheduled(session, reason="asr_speech_stopped")
+            self._refresh_qa_answer_timers(session, reason="asr_speech_stopped")
             return
 
     def _launch_qa_prewarm_task(self, session: SessionRecord) -> None:
@@ -1147,19 +1243,37 @@ class SessionManager:
             logger.info("qa.silence_fallback.cancel session=%s", session_id)
             task.cancel()
 
+    def _cancel_qa_finish_command_task(self, session_id: str) -> None:
+        task = self.qa_finish_command_tasks.pop(session_id, None)
+        if task is not None:
+            logger.info("qa.finish_command.cancel session=%s", session_id)
+            task.cancel()
+
     def _cancel_qa_response_done_grace_task(self, session_id: str) -> None:
         task = self.qa_response_done_grace_tasks.pop(session_id, None)
         if task is not None:
             logger.info("qa.response_done_grace.cancel session=%s", session_id)
             task.cancel()
 
+    def _bump_qa_answer_activity_sequence(self, session_id: str) -> int:
+        next_sequence = self.qa_answer_activity_sequences.get(session_id, 0) + 1
+        self.qa_answer_activity_sequences[session_id] = next_sequence
+        self.qa_answer_text_activity_at_monotonic[session_id] = monotonic()
+        return next_sequence
+
     def _clear_qa_runtime_state(self, session_id: str) -> None:
         self._cancel_qa_auto_advance_task(session_id)
         self._cancel_qa_silence_fallback_task(session_id)
+        self._cancel_qa_finish_command_task(session_id)
         self._cancel_qa_response_done_grace_task(session_id)
         self.qa_active_audio_turns.pop(session_id, None)
         self.qa_pending_response_done.pop(session_id, None)
         self.qa_answer_audio_started_at_ms.pop(session_id, None)
+        self.qa_answer_window_opened_at_ms.pop(session_id, None)
+        self.qa_answer_activity_sequences.pop(session_id, None)
+        self.qa_answer_text_activity_at_monotonic.pop(session_id, None)
+        self.qa_user_speech_started_at_monotonic.pop(session_id, None)
+        self.qa_user_speech_active_sessions.discard(session_id)
 
     def _on_qa_prewarm_task_done(self, session_id: str, task: asyncio.Task[None]) -> None:
         if self.qa_prewarm_tasks.get(session_id) is task:
@@ -1176,6 +1290,10 @@ class SessionManager:
     def _on_qa_silence_fallback_task_done(self, session_id: str, task: asyncio.Task[None]) -> None:
         if self.qa_silence_fallback_tasks.get(session_id) is task:
             self.qa_silence_fallback_tasks.pop(session_id, None)
+
+    def _on_qa_finish_command_task_done(self, session_id: str, task: asyncio.Task[None]) -> None:
+        if self.qa_finish_command_tasks.get(session_id) is task:
+            self.qa_finish_command_tasks.pop(session_id, None)
 
     def _on_qa_response_done_grace_task_done(self, session_id: str, task: asyncio.Task[None]) -> None:
         if self.qa_response_done_grace_tasks.get(session_id) is task:
@@ -1225,6 +1343,15 @@ class SessionManager:
             )
         )
 
+    def _ensure_qa_silence_fallback_scheduled(self, session: SessionRecord, *, reason: str) -> None:
+        if not self.qa_mode_orchestrator.is_user_answering(session.session_id):
+            return
+        existing_task = self.qa_silence_fallback_tasks.get(session.session_id)
+        if existing_task is not None and not existing_task.done():
+            logger.info("qa.silence_fallback.keep_existing session=%s reason=%s", session.session_id, reason)
+            return
+        self._schedule_qa_silence_fallback(session, reason=reason)
+
     async def _run_qa_prewarm_loop(self, session_id: str) -> None:
         try:
             while True:
@@ -1260,28 +1387,119 @@ class SessionManager:
         except Exception as error:
             logger.exception("qa.prewarm_refresh.failed session=%s reason=%s error=%s", session_id, reason, error)
 
-    def _schedule_qa_auto_advance(self, session: SessionRecord) -> None:
+    def _schedule_qa_auto_advance(
+        self,
+        session: SessionRecord,
+        *,
+        reason: str,
+        delay_seconds: float | None = None,
+    ) -> None:
         if not self.qa_mode_orchestrator.is_user_answering(session.session_id):
             return
         self._cancel_qa_auto_advance_task(session.session_id)
+        activity_sequence = self.qa_answer_activity_sequences.get(session.session_id, 0)
+        delay = self.qa_auto_advance_delay_seconds if delay_seconds is None else max(0.5, delay_seconds)
         logger.info(
-            "qa.auto_advance.schedule session=%s delay_ms=%s",
+            "qa.auto_advance.schedule session=%s reason=%s delay_ms=%s activity_seq=%s",
             session.session_id,
-            int(self.qa_auto_advance_delay_seconds * 1000),
+            reason,
+            int(delay * 1000),
+            activity_sequence,
         )
-        task = asyncio.create_task(self._run_qa_auto_advance(session.session_id))
+        task = asyncio.create_task(self._run_qa_auto_advance(session.session_id, activity_sequence, delay, reason))
         self.qa_auto_advance_tasks[session.session_id] = task
         task.add_done_callback(lambda finished_task, session_id=session.session_id: self._on_qa_auto_advance_task_done(session_id, finished_task))
 
-    def _ensure_qa_auto_advance_scheduled(self, session: SessionRecord, *, reason: str) -> None:
+    def _refresh_qa_answer_timers(self, session: SessionRecord, *, reason: str) -> None:
         if not self.qa_mode_orchestrator.is_user_answering(session.session_id):
             return
-        existing_task = self.qa_auto_advance_tasks.get(session.session_id)
-        if existing_task is not None and not existing_task.done():
-            logger.info("qa.auto_advance.keep_existing session=%s reason=%s", session.session_id, reason)
+
+        answer_text = self._current_qa_answer_text(session.session_id)
+        self._ensure_qa_finish_command_advance_scheduled(session, text=answer_text, reason=reason)
+        if session.session_id in self.qa_finish_command_tasks:
             return
-        logger.info("qa.auto_advance.schedule_request session=%s reason=%s", session.session_id, reason)
-        self._schedule_qa_auto_advance(session)
+
+        if reason == "user_partial":
+            if self._should_auto_advance_qa_answer(session):
+                self._cancel_qa_silence_fallback_task(session.session_id)
+                schedule_reason = "user_partial_stable"
+                logger.info("qa.auto_advance.schedule_request session=%s reason=%s", session.session_id, schedule_reason)
+                self._schedule_qa_auto_advance(
+                    session,
+                    reason=schedule_reason,
+                    delay_seconds=self.qa_partial_stability_delay_seconds,
+                )
+                return
+            self._cancel_qa_auto_advance_task(session.session_id)
+            self._ensure_qa_silence_fallback_scheduled(session, reason=reason)
+            return
+
+        if reason in self.QA_AUTO_ADVANCE_TRIGGER_REASONS and self._should_auto_advance_qa_answer(session):
+            self._cancel_qa_silence_fallback_task(session.session_id)
+            logger.info("qa.auto_advance.schedule_request session=%s reason=%s", session.session_id, reason)
+            self._schedule_qa_auto_advance(session, reason=reason)
+            return
+
+        self._cancel_qa_auto_advance_task(session.session_id)
+        self._ensure_qa_silence_fallback_scheduled(session, reason=reason)
+
+    def _ensure_qa_finish_command_advance_scheduled(self, session: SessionRecord, *, text: str, reason: str) -> None:
+        if not self.qa_mode_orchestrator.is_user_answering(session.session_id):
+            return
+        if not self._contains_qa_answer_finish_command(session.language, text):
+            return
+        existing_task = self.qa_finish_command_tasks.get(session.session_id)
+        if existing_task is not None and not existing_task.done():
+            logger.info("qa.finish_command.keep_existing session=%s reason=%s", session.session_id, reason)
+            return
+
+        self._cancel_qa_auto_advance_task(session.session_id)
+        self._cancel_qa_silence_fallback_task(session.session_id)
+        logger.info(
+            "qa.finish_command.schedule session=%s reason=%s delay_ms=%s text=%s",
+            session.session_id,
+            reason,
+            int(self.qa_finish_command_delay_seconds * 1000),
+            text[:120],
+        )
+        task = asyncio.create_task(self._run_qa_finish_command_advance(session.session_id, reason))
+        self.qa_finish_command_tasks[session.session_id] = task
+        task.add_done_callback(
+            lambda finished_task, session_id=session.session_id: self._on_qa_finish_command_task_done(
+                session_id,
+                finished_task,
+            )
+        )
+
+    def _should_defer_qa_auto_advance_for_active_speech(self, session_id: str, *, reason: str) -> bool:
+        if session_id not in self.qa_user_speech_active_sessions:
+            return False
+
+        now = monotonic()
+        last_text_activity_at = self.qa_answer_text_activity_at_monotonic.get(session_id)
+        if last_text_activity_at is None:
+            return False
+
+        quiet_seconds = now - last_text_activity_at
+        if quiet_seconds >= self.qa_speech_active_auto_advance_grace_seconds:
+            logger.info(
+                "qa.auto_advance.allow session=%s reason=active_speech_stale trigger=%s quiet_ms=%s",
+                session_id,
+                reason,
+                int(quiet_seconds * 1000),
+            )
+            self.qa_user_speech_active_sessions.discard(session_id)
+            self.qa_user_speech_started_at_monotonic.pop(session_id, None)
+            return False
+
+        logger.info(
+            "qa.auto_advance.defer session=%s reason=user_speech_active trigger=%s quiet_ms=%s grace_ms=%s",
+            session_id,
+            reason,
+            int(quiet_seconds * 1000),
+            int(self.qa_speech_active_auto_advance_grace_seconds * 1000),
+        )
+        return True
 
     def _schedule_qa_response_done_grace(self, session: SessionRecord, *, turn_id: str) -> None:
         self._cancel_qa_response_done_grace_task(session.session_id)
@@ -1300,20 +1518,40 @@ class SessionManager:
             )
         )
 
-    async def _run_qa_auto_advance(self, session_id: str) -> None:
+    async def _run_qa_auto_advance(
+        self,
+        session_id: str,
+        activity_sequence: int,
+        delay_seconds: float,
+        reason: str,
+    ) -> None:
         try:
-            await asyncio.sleep(self.qa_auto_advance_delay_seconds)
-            session = self.sessions.get(session_id)
-            if session is None or not self.qa_mode_orchestrator.is_user_answering(session_id):
-                return
-            if session_id in self.qa_active_audio_turns:
-                logger.info("qa.auto_advance.skip session=%s reason=assistant_audio_in_flight", session_id)
-                return
+            await asyncio.sleep(delay_seconds)
+            while True:
+                session = self.sessions.get(session_id)
+                if session is None or not self.qa_mode_orchestrator.is_user_answering(session_id):
+                    return
+                if self.qa_answer_activity_sequences.get(session_id, 0) != activity_sequence:
+                    logger.info(
+                        "qa.auto_advance.skip session=%s reason=stale_activity activity_seq=%s current_seq=%s",
+                        session_id,
+                        activity_sequence,
+                        self.qa_answer_activity_sequences.get(session_id, 0),
+                    )
+                    return
+                if session_id in self.qa_active_audio_turns:
+                    logger.info("qa.auto_advance.skip session=%s reason=assistant_audio_in_flight", session_id)
+                    return
+                if self._should_defer_qa_auto_advance_for_active_speech(session_id, reason=reason):
+                    await asyncio.sleep(self.qa_speech_active_recheck_seconds)
+                    continue
+                break
             logger.info("qa.auto_advance.fire session=%s", session_id)
             if not self._should_auto_advance_qa_answer(session):
-                logger.info("qa.auto_advance.skip session=%s reason=empty_or_filler", session_id)
+                logger.info("qa.auto_advance.skip session=%s reason=empty_filler_or_too_short", session_id)
+                self._ensure_qa_silence_fallback_scheduled(session, reason="auto_advance_skip")
                 return
-            await self._commit_qa_user_turn(session)
+            await self._commit_qa_user_turn(session, allow_silent_fallback=True)
         except asyncio.CancelledError:
             logger.info("qa.auto_advance.cancelled session=%s", session_id)
             return
@@ -1322,6 +1560,35 @@ class SessionManager:
             session = self.sessions.get(session_id)
             if session is not None:
                 await self._broadcast(session, ErrorEvent(message=f"自动进入下一问失败：{error}").model_dump())
+
+    async def _run_qa_finish_command_advance(self, session_id: str, reason: str) -> None:
+        try:
+            await asyncio.sleep(self.qa_finish_command_delay_seconds)
+            session = self.sessions.get(session_id)
+            if session is None or not self.qa_mode_orchestrator.is_user_answering(session_id):
+                return
+            if session_id in self.qa_active_audio_turns:
+                logger.info("qa.finish_command.skip session=%s reason=assistant_audio_in_flight", session_id)
+                return
+
+            answer_text = self._current_qa_answer_text(session_id)
+            logger.info(
+                "qa.finish_command.fire session=%s reason=%s answer=%s",
+                session_id,
+                reason,
+                answer_text[:120] or "<empty>",
+            )
+            self._cancel_qa_auto_advance_task(session_id)
+            self._cancel_qa_silence_fallback_task(session_id)
+            await self._commit_qa_user_turn(session, allow_silent_fallback=True)
+        except asyncio.CancelledError:
+            logger.info("qa.finish_command.cancelled session=%s", session_id)
+            return
+        except Exception as error:
+            logger.exception("qa.finish_command.failed session=%s reason=%s error=%s", session_id, reason, error)
+            session = self.sessions.get(session_id)
+            if session is not None:
+                await self._broadcast(session, ErrorEvent(message=f"结束语进入下一问失败：{error}").model_dump())
 
     async def _run_qa_response_done_grace(self, session_id: str, turn_id: str) -> None:
         try:
@@ -1362,7 +1629,7 @@ class SessionManager:
             answer_text = self._current_qa_answer_text(session_id)
             if not self._is_empty_or_filler_qa_answer(session.language, answer_text):
                 logger.info(
-                    "qa.silence_fallback.skip session=%s reason=substantive_answer answer=%s",
+                    "qa.silence_fallback.skip session=%s reason=user_answer_present answer=%s",
                     session_id,
                     answer_text[:80],
                 )
@@ -1502,13 +1769,38 @@ class SessionManager:
         return normalized in self.FILLER_TOKENS[language]
 
     def _current_qa_answer_text(self, session_id: str) -> str:
-        qa_session = self.qa_mode_orchestrator.sessions.get(session_id)
-        if qa_session is None:
-            return ""
-        committed_answer = " ".join(chunk.strip() for chunk in qa_session.current_answer_chunks if chunk.strip()).strip()
-        if committed_answer:
-            return committed_answer
-        return (qa_session.current_live_partial_answer or "").strip()
+        return self.qa_mode_orchestrator.current_answer_text(session_id)
+
+    def _has_qa_start_context(
+        self,
+        session: SessionRecord,
+        *,
+        training_mode: str,
+        document_text: str | None,
+        manual_text: str | None,
+    ) -> bool:
+        if (document_text or "").strip() or (manual_text or "").strip():
+            return True
+        if training_mode == "document_speech":
+            return False
+
+        user_text = " ".join(
+            chunk.text.strip()
+            for chunk in session.transcript_chunks
+            if chunk.speaker == "user" and chunk.text.strip()
+        )
+        if self._is_empty_or_filler_qa_answer(session.language, user_text):
+            return False
+        if session.language == "zh":
+            return len(self._normalize_qa_answer_text(user_text)) >= 8
+
+        words = [
+            word.lower()
+            for word in re.findall(r"[A-Za-z0-9']+", user_text)
+            if word.strip()
+        ]
+        filler_words = self.QA_FALLBACK_FILLER_TOKENS[session.language]
+        return len([word for word in words if word not in filler_words]) >= 3
 
     def _trim_assistant_question_text(self, text: str) -> str:
         stripped = text.strip()
@@ -1533,13 +1825,68 @@ class SessionManager:
 
     def _should_auto_advance_qa_answer(self, session: SessionRecord) -> bool:
         answer_text = self._current_qa_answer_text(session.session_id)
-        return not self._is_empty_or_filler_qa_answer(session.language, answer_text)
+        if self._is_empty_or_filler_qa_answer(session.language, answer_text):
+            return False
+        if self._contains_qa_answer_finish_command(session.language, answer_text):
+            return True
+        if session.language == "zh":
+            compact_answer = self._normalize_qa_answer_text(answer_text)
+            return len(compact_answer) >= self.qa_min_auto_advance_zh_chars
+
+        words = [
+            word.lower()
+            for word in re.findall(r"[A-Za-z0-9']+", answer_text)
+            if word.strip()
+        ]
+        filler_words = self.QA_FALLBACK_FILLER_TOKENS[session.language]
+        substantive_words = [word for word in words if word not in filler_words]
+        return len(substantive_words) >= self.qa_min_auto_advance_en_words
+
+    def _contains_qa_answer_finish_command(self, language: LanguageOption, text: str) -> bool:
+        normalized = self._normalize_qa_finish_command_text(language, text)
+        if not normalized:
+            return False
+
+        negations = {
+            self._normalize_qa_finish_command_text(language, phrase)
+            for phrase in self.QA_ANSWER_FINISH_NEGATIONS[language]
+        }
+        if any(phrase and phrase in normalized for phrase in negations):
+            return False
+
+        commands = {
+            self._normalize_qa_finish_command_text(language, phrase)
+            for phrase in self.QA_ANSWER_FINISH_COMMANDS[language]
+        }
+        if language == "zh":
+            candidate = self._strip_qa_finish_zh_sentence_tail(normalized)
+            return any(
+                phrase and candidate.endswith(self._strip_qa_finish_zh_sentence_tail(phrase))
+                for phrase in commands
+            )
+        return any(phrase and phrase in normalized for phrase in commands)
+
+    @staticmethod
+    def _normalize_qa_finish_command_text(language: LanguageOption, text: str) -> str:
+        if language == "zh":
+            return re.sub(r"[\s,.!?，。！？、…:：;；\"'“”‘’（）()\-\u3000]+", "", text).lower()
+        return re.sub(r"[\s,.!?，。！？、…:：;；\"'“”‘’（）()\-\u3000]+", " ", text).strip().lower()
+
+    @staticmethod
+    def _strip_qa_finish_zh_sentence_tail(text: str) -> str:
+        return re.sub(r"[了吧吗呢啦哈呀哦啊]+$", "", text)
 
     def _is_empty_or_filler_qa_answer(self, language: LanguageOption, text: str) -> bool:
-        normalized = re.sub(r"[\s,.!?，。！？、…:：;；\"'“”‘’（）()\-\u3000]+", "", text).lower()
+        normalized = self._normalize_qa_answer_text(text)
         if not normalized:
             return True
+        if language == "en":
+            normalized_phrase = re.sub(r"[\s,.!?，。！？、…:：;；\"'“”‘’（）()\-\u3000]+", " ", text).strip().lower()
+            if normalized_phrase in self.QA_FALLBACK_FILLER_TOKENS[language]:
+                return True
         if normalized in self.QA_FALLBACK_FILLER_TOKENS[language]:
+            return True
+        if language == "zh" and self._is_repeated_zh_filler(normalized):
             return True
         if language == "zh":
             pieces = [piece for piece in re.split(r"[，。！？、；：\s]+", text) if piece.strip()]
@@ -1553,12 +1900,36 @@ class SessionManager:
             for piece in pieces
         )
 
+    @staticmethod
+    def _normalize_qa_answer_text(text: str) -> str:
+        return re.sub(r"[\s,.!?，。！？、…:：;；\"'“”‘’（）()\-\u3000]+", "", text).lower()
+
+    @staticmethod
+    def _is_repeated_zh_filler(normalized_text: str) -> bool:
+        return bool(re.fullmatch(r"(嗯|啊|额|呃|哦|诶|欸|哎|唉|好|好的|收到)+", normalized_text))
+
     def _mark_qa_answer_window_open(self, session: SessionRecord) -> None:
         self.qa_answer_audio_started_at_ms.pop(session.session_id, None)
+        self.qa_answer_window_opened_at_ms[session.session_id] = self._build_elapsed_ms(session)
+        self.qa_answer_activity_sequences[session.session_id] = 0
+        self.qa_answer_text_activity_at_monotonic.pop(session.session_id, None)
+        self.qa_user_speech_active_sessions.discard(session.session_id)
+        self.qa_user_speech_started_at_monotonic.pop(session.session_id, None)
         self.qa_mode_orchestrator.clear_live_partial_answer(session.session_id)
 
     def _accept_qa_user_transcript(self, session: SessionRecord, chunk: TranscriptChunk) -> bool:
         if chunk.speaker != "user" or not self.qa_mode_orchestrator.is_user_answering(session.session_id):
+            return False
+
+        window_opened_at_ms = self.qa_answer_window_opened_at_ms.get(session.session_id)
+        if window_opened_at_ms is not None and chunk.endMs < max(0, window_opened_at_ms - 250):
+            logger.info(
+                "qa.user_transcript.ignore_stale session=%s chunk_end_ms=%s answer_window_open_ms=%s text=%s",
+                session.session_id,
+                chunk.endMs,
+                window_opened_at_ms,
+                chunk.text[:120],
+            )
             return False
 
         audio_started_at_ms = self.qa_answer_audio_started_at_ms.get(session.session_id)

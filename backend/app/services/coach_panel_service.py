@@ -331,11 +331,23 @@ class CoachPanelService:
         if not normalized_headline or not normalized_detail:
             return status, normalized_headline, normalized_detail
 
+        if (
+            status == "adjust_now"
+            and dimension_id == "body_expression"
+            and not self._looks_face_blocking_signal(f"{normalized_headline} {normalized_detail}")
+            and self._looks_uncertain_hand_height_warning(normalized_headline, normalized_detail)
+        ):
+            return (
+                "analyzing",
+                self._text(language, "正在确认肢体反馈", "Checking body delivery"),
+                self._text(language, "手势证据还不够清楚。", "The hand-position evidence is not clear enough yet."),
+            )
+
         if status == "adjust_now" and self._looks_resolved_or_positive(normalized_detail):
             return (
                 status,
                 normalized_headline,
-                self._fallback_adjust_detail(language, dimension_id, normalized_headline),
+                self._fallback_adjust_detail(language, dimension_id, normalized_headline, normalized_detail),
             )
 
         if status in {"doing_well", "stable"} and self._looks_issue_or_action(normalized_headline, normalized_detail):
@@ -396,23 +408,98 @@ class CoachPanelService:
         )
         return any(marker in combined for marker in issue_markers)
 
+    @staticmethod
+    def _looks_face_blocking_signal(text: str) -> bool:
+        normalized = text.strip().lower().replace(" ", "")
+        blocking_markers = (
+            "挡脸",
+            "遮脸",
+            "捂脸",
+            "盖脸",
+            "挡住脸",
+            "遮住脸",
+            "盖住脸",
+            "挡住嘴",
+            "遮住嘴",
+            "挡住眼",
+            "遮住眼",
+            "挡住鼻",
+            "遮住鼻",
+            "手挡脸",
+            "手遮脸",
+            "手捂脸",
+            "handcoverstheface",
+            "handcoveringtheface",
+            "handiscoveringtheface",
+            "handblockstheface",
+            "handisblockingtheface",
+            "coveringtheface",
+            "blockstheface",
+            "blockingtheface",
+            "coveringmouth",
+            "blockingmouth",
+            "coveringeyes",
+            "blockingeyes",
+            "coveringnose",
+            "blockingnose",
+        )
+        return any(marker in normalized for marker in blocking_markers)
+
+    @staticmethod
+    def _looks_uncertain_hand_height_warning(headline: str, detail: str) -> bool:
+        combined = f"{headline} {detail}".strip().lower().replace(" ", "")
+        hand_markers = ("手", "hand")
+        height_markers = (
+            "耳边",
+            "耳旁",
+            "耳朵",
+            "举",
+            "抬",
+            "放下",
+            "太高",
+            "byyourear",
+            "nearyourear",
+            "atyourear",
+            "raisedhand",
+            "handraised",
+            "loweryourhand",
+            "putyourhanddown",
+            "handdown",
+        )
+        return any(marker in combined for marker in hand_markers) and any(
+            marker in combined for marker in height_markers
+        )
+
     def _fallback_adjust_detail(
         self,
         language: LanguageOption,
         dimension_id: str,
         headline: str,
+        detail: str = "",
     ) -> str:
+        combined = f"{headline} {detail}"
         if language == "en":
             if dimension_id == "body_expression":
+                normalized = combined.strip().lower()
+                if self._looks_face_blocking_signal(combined):
+                    return "Move the hand fully away from your face."
+                if "hand" in normalized or "gesture" in normalized:
+                    return "Bring the gesture back near your chest."
+                if "face" in normalized or "gaze" in normalized or "eye" in normalized:
+                    return "Bring your gaze back to the camera."
                 return "Fix this first, then keep going."
             if dimension_id == "voice_pacing":
                 return "Adjust this on the next line."
             return "Make this change in the next sentence."
 
         if dimension_id == "body_expression":
-            if "手" in headline or "脸" in headline:
-                return "先把手离开脸，再继续讲。"
-            if "镜头" in headline or "回正" in headline or "居中" in headline:
+            if self._looks_face_blocking_signal(combined):
+                return "手先离开脸外。"
+            if "手" in combined or "动作" in combined or "手势" in combined:
+                return "手势先收回胸前。"
+            if "眼" in combined or "脸" in combined or "表情" in combined or "视线" in combined:
+                return "先把视线回到镜头。"
+            if "镜头" in combined or "回正" in combined or "居中" in combined:
                 return "先把位置调回镜头中间。"
             return "先按上面这一步调整。"
 

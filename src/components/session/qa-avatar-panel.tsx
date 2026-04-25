@@ -42,8 +42,6 @@ interface QAAvatarPanelProps {
   audioUrl: string | null;
   autoPlayAudio: boolean;
   avatarSrc: string;
-  feedbackText: string | null;
-  goal: string | null;
   phase: QAPhase;
   questionText: string | null;
   speaking: boolean;
@@ -57,8 +55,6 @@ export function QAAvatarPanel({
   audioUrl,
   autoPlayAudio,
   avatarSrc,
-  feedbackText,
-  goal,
   phase,
   questionText,
   speaking,
@@ -165,13 +161,6 @@ export function QAAvatarPanel({
               </div>
             ) : null}
 
-            <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10">
-              <div
-                className={`h-full rounded-full bg-gradient-to-r from-sky-300 via-cyan-300 to-emerald-300 transition-all duration-300 ${
-                  speaking ? "w-full animate-pulse" : "w-2/5"
-                }`}
-              />
-            </div>
           </div>
 
           <div className="min-h-0 space-y-3">
@@ -180,19 +169,7 @@ export function QAAvatarPanel({
               <p className="mt-3 text-sm font-medium leading-7 text-slate-200">
                 {questionText ?? "开启问答后，AI 会基于文档或已讲内容主动提问。"}
               </p>
-              {goal ? (
-                <p className="mt-3 rounded-2xl border border-slate-700/60 bg-slate-900/85 px-3 py-2 text-xs leading-6 text-slate-300">
-                  目标：{goal}
-                </p>
-              ) : null}
             </div>
-
-            {feedbackText ? (
-              <div className="rounded-[24px] border border-emerald-300/18 bg-emerald-400/10 px-4 py-4">
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-200">Latest Feedback</p>
-                <p className="mt-3 text-sm leading-7 text-emerald-50">{feedbackText}</p>
-              </div>
-            ) : null}
           </div>
         </div>
       </div>

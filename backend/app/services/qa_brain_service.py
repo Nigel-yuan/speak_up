@@ -393,16 +393,16 @@ class AliyunQABrainService:
         return str(message)
 
     def _fallback_brief(self, bundle: ReferenceBundle) -> ReferenceBrief:
-        source_text = bundle.combined_text or "当前还没有可用材料。"
+        source_text = bundle.combined_text.strip()
         lines = [line.strip("- ").strip() for line in source_text.splitlines() if line.strip()]
-        key_points = lines[:4] or ["当前还没有清晰材料，可以先从你的核心结论开始。"]
-        summary = " ".join(lines[:3])[:220] or "当前上下文较少，建议先让用户讲出核心结论。"
+        key_points = lines[:4] or ["当前还没有清晰材料，可以先从一个具体判断开始。"]
+        summary = " ".join(lines[:3])[:220] or "当前上下文较少，建议先让用户讲出一个具体判断。"
         sections = [
             TopicSection(
                 title="当前重点",
                 summary=summary,
                 key_points=key_points[:3],
-                follow_up_angles=["先讲结论", "补一条依据", "说明为什么重要"],
+                follow_up_angles=["挑一个具体判断", "补一条依据", "说明和听众有什么关系"],
             )
         ]
         return ReferenceBrief(
@@ -413,7 +413,7 @@ class AliyunQABrainService:
             factual_claims=key_points[:2],
             assumptions=[],
             risk_points=[],
-            open_questions=["用户真正想表达的核心点是什么？"],
+            open_questions=["用户最希望听众带走哪一个具体判断？"],
             challengeable_points=key_points[:2],
             notable_numbers=[],
             topic_sections=sections,
@@ -438,9 +438,9 @@ class AliyunQABrainService:
 
         if training_mode == "document_speech" and brief.key_points:
             return GeneratedQuestion(
-                question_text=f"请先用一句话概括这份材料里最核心的结论，再补两条支撑点。",
+                question_text=f"请从这份材料里挑一个最需要听众带走的判断，再补两条支撑点。",
                 goal="确认用户是否抓住了文档主线。",
-                expected_points=brief.key_points[:3] or ["核心结论", "支撑点 1", "支撑点 2"],
+                expected_points=brief.key_points[:3] or ["具体判断", "支撑点 1", "支撑点 2"],
                 follow_up=False,
             )
 
@@ -454,9 +454,9 @@ class AliyunQABrainService:
 
         scenario_label = SCENARIO_LABELS.get(scenario_id, "通用表达训练")
         return GeneratedQuestion(
-            question_text=f"如果把这次{scenario_label}的内容收成一句核心表达，你最想让听众记住什么？",
-            goal="确认用户的核心结论是否清楚。",
-            expected_points=["一句结论", "为什么重要"],
+            question_text=f"这次{scenario_label}里，你最想让听众带走哪一个具体判断？",
+            goal="确认用户是否能给出清楚的表达落点。",
+            expected_points=["具体判断", "为什么重要"],
             follow_up=False,
         )
 
@@ -484,9 +484,9 @@ class AliyunQABrainService:
         else:
             missed_points.append("回答还偏短，可以再补一层")
 
-        feedback = "回答方向基本对，但可以先给一句结论，再补 2 个关键信息点。"
+        feedback = "回答方向基本对，但可以先给一个具体判断，再补 2 个关键信息点。"
         if not strengths:
-            feedback = "回答还没有完全打到问题核心。建议先直接回答，再补例子或依据。"
+            feedback = "回答还没有直接回应问题。建议先直接回答，再补例子或依据。"
 
         next_action = "follow_up" if missed_points else "next_question"
         return AnswerEvaluation(

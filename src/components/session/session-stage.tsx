@@ -4,7 +4,7 @@ import { CameraPanel } from "@/components/session/camera-panel";
 import { DocumentPreviewPanel } from "@/components/session/document-preview-panel";
 import { DocumentStage } from "@/components/session/document-stage";
 import { QAAvatarPanel } from "@/components/session/qa-avatar-panel";
-import type { QAFeedback, QAQuestion, QAPhase, TrainingDocumentAsset, TrainingMode } from "@/types/session";
+import type { QAQuestion, QAPhase, TrainingDocumentAsset, TrainingMode } from "@/types/session";
 
 interface SessionStageProps {
   avatarSrc: string;
@@ -13,8 +13,6 @@ interface SessionStageProps {
   controls: React.ReactNode;
   documentAsset: TrainingDocumentAsset | null;
   elapsedSeconds: number;
-  feedback: QAFeedback | null;
-  goal: string | null;
   isRunning: boolean;
   phase: QAPhase;
   qaAudioUrl: string | null;
@@ -38,8 +36,6 @@ export function SessionStage({
   controls,
   documentAsset,
   elapsedSeconds,
-  feedback,
-  goal,
   isRunning,
   phase,
   qaAudioUrl,
@@ -136,8 +132,6 @@ export function SessionStage({
             audioUrl={qaAudioUrl}
             autoPlayAudio={qaAudioAutoPlay}
             avatarSrc={avatarSrc}
-            feedbackText={feedback?.feedbackText ?? null}
-            goal={goal}
             phase={phase}
             questionText={question?.questionText ?? null}
             speaking={speaking}

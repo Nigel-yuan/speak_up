@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from app.schemas import LanguageOption, ReportWindowPack, ScenarioType
@@ -28,8 +29,26 @@ class ReportWindowBuilderService:
         self.repository = repository
         self.window_size_ms = window_size_ms
         self.min_window_ms = min_window_ms
+        self._session_locks: dict[str, asyncio.Lock] = {}
 
     async def build_available_windows(
+        self,
+        *,
+        session_id: str,
+        scenario_id: ScenarioType,
+        language: LanguageOption,
+        finalizing: bool = False,
+    ) -> list[ReportWindowPack]:
+        lock = self._session_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            return await self._build_available_windows_unlocked(
+                session_id=session_id,
+                scenario_id=scenario_id,
+                language=language,
+                finalizing=finalizing,
+            )
+
+    async def _build_available_windows_unlocked(
         self,
         *,
         session_id: str,

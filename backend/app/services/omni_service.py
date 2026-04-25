@@ -14,6 +14,7 @@ from websockets.exceptions import ConnectionClosed
 
 from app.schemas import LanguageOption, ScenarioType
 from app.schemas import CoachPanelPatch, CoachPanelPatchDimension
+from app.services.aliyun_ws_config import aliyun_realtime_ws_connect_kwargs
 
 
 @dataclass(frozen=True)
@@ -116,7 +117,7 @@ class AliyunOmniCoachService:
         )
         self.body_audio_window_ms = max(
             200,
-            min(2000, int(os.getenv("ALIYUN_OMNI_BODY_AUDIO_WINDOW_MS", "500"))),
+            min(2000, int(os.getenv("ALIYUN_OMNI_BODY_AUDIO_WINDOW_MS", "1200"))),
         )
         self.body_audio_min_payloads = max(
             2,
@@ -147,7 +148,7 @@ class AliyunOmniCoachService:
         websocket = await websockets.connect(
             self._build_url(),
             additional_headers={"Authorization": f"bearer {self.api_key}"},
-            max_size=2**22,
+            **aliyun_realtime_ws_connect_kwargs(),
         )
 
         created_event = await self._receive_json(websocket)
@@ -617,8 +618,9 @@ class AliyunOmniCoachService:
             "Focus only on the visible body delivery right now. "
             "Update only one fixed dimension: body_expression. "
             "Do not return voice_pacing or content_expression. "
-            "Always evaluate and return body_expression whenever a response is created, even if the result is only stable or analyzing. "
-            "Do not use should_emit=false just because the scene is stable. "
+            "Emit body_expression when the current frame provides a clear useful cue, including a clearly stable posture. "
+            "If the speaker is visible and screen-facing with no urgent issue, emit stable or doing_well instead of should_emit=false. "
+            "Use should_emit=false only when the visible evidence is weak, ambiguous, the speaker is not visible, or the frame is likely transient. "
             "Prioritize the latest visible issue or the latest visible improvement, not an earlier posture from several seconds ago. "
             "Before judging body_expression, first infer the likely delivery mode from the nearby audio and the line's intent: for example excited or celebratory, confident and assertive, reflective or questioning, serious and low-energy, or neutral. "
             "Judge the body relative to that mode, not against one neutral baseline. Do not output the mode itself. "
@@ -639,18 +641,23 @@ class AliyunOmniCoachService:
             "When the nearby audio is clearly excited, upbeat, or celebratory, a bigger gesture, brighter face, stronger lift, or brief emphatic motion can be a good match rather than a problem. "
             "When the nearby audio is clearly serious, reflective, or emotionally lowered, a calmer, smaller, or lower-energy body state can still be appropriate if it looks intentional, stable, and engaged rather than collapsed or withdrawn. "
             "For movement or space use, only judge this when the frame is wide enough. Look for random swaying, pacing without purpose, or useful movement that supports the delivery. "
-            "For facial or eye engagement, only judge this when the face is clear enough. Look for long downward gaze, obvious screen-checking, visible tension, very flat expression, or clear audience connection. "
-            "Also watch for immediate bad habits: a hand or object visibly covering the face, long head-down posture, persistent head tilt, and clearly drifting out of frame. "
-            "If only the head is visible but the face is still clear enough, you may still judge clear face occlusion, downward gaze, head tilt, facial tension, and eye engagement. "
+            "For facial or eye engagement, only judge this when the face is clear enough. This product is screen-based: normal gaze at the screen, slides, transcript, or app UI is acceptable even when the eyes are slightly below the camera. "
+            "Do not ask the speaker to look at the camera or raise the head just because they are looking at the screen. "
+            "Only warn about head-down or gaze-down when the chin is clearly tucked, the whole face is angled downward, or the eyes stay far below the screen for a sustained moment. "
+            "If you warn about head-down or gaze-down, use confidence >= 0.92 and evidence_text must mention sustained head-down, chin tucked, or face angled downward. "
+            "Also watch for immediate bad habits: a hand or object visibly covering the face, sustained head-down posture, persistent head tilt, and clearly drifting out of frame. "
+            "If only the head is visible but the face is still clear enough, you may still judge clear face occlusion, head tilt, facial tension, and eye engagement, but normal screen gaze is not a problem. "
             "Use analyzing only when both upper-body and face evidence are too weak to support a reliable judgment. "
             "Be conservative. Only use adjust_now when there is clear visible evidence right now. "
-            "If the speaker is visibly covering the face with a hand or object for a sustained moment, use adjust_now instead of analyzing. "
-            "If the head stays tilted, the gaze stays down, or the speaker stays visibly off-center for a sustained moment, use adjust_now instead of analyzing. "
+            "If the speaker is visibly covering the face with a hand or object for a sustained moment, use adjust_now instead of analyzing and set confidence above 0.90. "
+            "If the head stays tilted or the speaker stays visibly off-center for a sustained moment, use adjust_now instead of analyzing. "
+            "For gaze, do not use adjust_now unless the sustained head-down rule above is met. "
             "If the head is already severely tilted or the face is clearly angled far to one side, use adjust_now immediately instead of stable or should_emit=false. "
             "Do not use vague body advice such as '别乱比划', '肢体不自然', or '状态不太对'. "
             "Instead, name the concrete visible issue and one immediate action. "
             "Bad: '手放下别乱比划'. Good: '手势先收回胸前'. "
             "Bad: '站姿不自然'. Good: '身体偏左，先回到镜头中间'. "
+            "Bad: '头先抬起' or '抬头看镜头' when the speaker is normally looking at the screen. Good: stable or '屏幕前状态稳定'. "
             "Bad: '手从耳边放下来' when the hand is not plainly visible at the ear. Good: use analyzing or a clearer visible cue. "
             "Bad: '手举太高了，放下来' for one short celebratory fist that supports the line. Good: keep it neutral or positive unless the hand clearly stays high, blocks the face, or distracts from the point. "
             "Do not comment on full-body movement if the frame only shows the head or upper body. "
@@ -689,10 +696,7 @@ class AliyunOmniCoachService:
                     return
                 audio_payloads = self._collect_recent_body_audio_payloads(connection)
                 if len(audio_payloads) < self.body_audio_min_payloads:
-                    audio_payloads = [
-                        *audio_payloads,
-                        *self._build_silence_audio_payloads(self.body_audio_min_payloads - len(audio_payloads)),
-                    ]
+                    return
 
                 image_base64 = connection.latest_image_base64
                 connection.latest_image_dirty = False

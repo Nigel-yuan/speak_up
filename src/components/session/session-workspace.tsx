@@ -209,6 +209,7 @@ export function SessionWorkspace({
     elapsedSeconds,
     error,
     finish,
+    flushActiveTranscript,
     flushTranscript,
     isLoading,
     isRunning,
@@ -367,12 +368,13 @@ export function SessionWorkspace({
       return true;
     }
 
-    const userTranscriptText = transcript
+    const candidateChunks = activeTranscript ? [...transcript, activeTranscript] : transcript;
+    const userTranscriptText = candidateChunks
       .filter((chunk) => chunk.speaker === "user")
       .map((chunk) => chunk.text)
       .join(" ");
     return hasSubstantiveQAStartText(language, userTranscriptText);
-  }, [documentAsset?.extractedText, documentAsset?.markdownSource, language, transcript]);
+  }, [activeTranscript, documentAsset?.extractedText, documentAsset?.markdownSource, language, transcript]);
 
   useEffect(() => {
     return () => {
@@ -424,17 +426,19 @@ export function SessionWorkspace({
   };
 
   const launchQA = useCallback(() => {
+    const { active } = flushActiveTranscript();
     startQA({
       trainingMode,
       voiceProfileId: selectedCoachProfileId,
       documentName: documentAsset?.name ?? null,
       documentText: documentAsset?.extractedText ?? documentAsset?.markdownSource ?? null,
-      manualText: null,
+      manualText: active?.text.trim() || null,
     });
   }, [
     documentAsset?.extractedText,
     documentAsset?.markdownSource,
     documentAsset?.name,
+    flushActiveTranscript,
     selectedCoachProfileId,
     startQA,
     trainingMode,

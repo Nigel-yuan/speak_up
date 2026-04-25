@@ -99,9 +99,33 @@
 
 当前默认模型：
 
-- `ALIYUN_REPORT_WINDOW_MODEL=qwen-plus-latest`
-- `ALIYUN_REPORT_BRAIN_MODEL=qwen-plus-latest`
-- `ALIYUN_REPORT_BRAIN_FALLBACK_MODEL=qwen-max-latest`
+- `ALIYUN_REPORT_WINDOW_MODEL=qwen-flash`
+- `ALIYUN_REPORT_BRAIN_MODEL=qwen-flash`
+- `ALIYUN_REPORT_BRAIN_FALLBACK_MODEL=qwen-plus-latest`
+- `ALIYUN_REPORT_WINDOW_MAX_TOKENS=1600`
+- `ALIYUN_REPORT_BRAIN_MAX_TOKENS=2600`
+- `ALIYUN_REPORT_ENABLE_THINKING=false`
+
+默认使用 `qwen-flash` 是为了缩短生成等待时间。它的报告质量可能低于 `qwen-plus` / `qwen-max`，但对“窗口评估 + 最终整合”这种结构化 JSON 任务通常够用。需要更稳的文案时，把 `ALIYUN_REPORT_BRAIN_MODEL` 改回 `qwen-plus-latest` 即可。
+
+### 5.1 评分刻度
+
+报告评分使用完整 0-100 刻度，不再把 60-80 当安全区。
+
+- `90-100`：非常出色，表达清楚、有吸引力，问题只剩精修
+- `80-89`：表现稳定，有明确优点，少量短板不影响整体完成度
+- `70-79`：基本可用，听众能跟上，但亮点不够稳定或问题较明显
+- `60-69`：勉强过线，能听懂一部分，但短板已经影响说服力
+- `40-59`：问题明显，结构、节奏、内容或呈现至少有一项拖垮体验
+- `0-39`：严重失效，听众很难获得清晰信息，必须先重建基本表达
+
+代码侧还会在落盘前做一次分数-文案一致性校验：
+
+- 低于 `70` 的整场报告会强制使用更直接的问题导向文案
+- 低于 `75` 的单项维度必须有明确 weakness
+- 高于 `85` 但缺少具体优点时，会补上对应维度的明确 praise
+- highlights 不再为低分维度生成“整体稳定”这类泛泛表扬
+- headline 不使用“问题明显”“勉强过线”这类评分口径，而是转成“先把逻辑理顺”“先把节奏稳住”这类下一轮动作
 
 ### `AI Live Coach`
 

@@ -101,6 +101,7 @@ const PARTIAL_FILLER_TOKENS = {
 const PARTIAL_NOISE_PATTERN = /^[\s,.!?，。！？、…]+$/;
 const SHORT_PARTIAL_WORDS_MAX = 3;
 const SHORT_PARTIAL_CHARS_MAX = 4;
+const ACTIVE_TRANSCRIPT_STALE_MS = 12000;
 const idleQAState: QAState = {
   enabled: false,
   phase: "idle",
@@ -647,6 +648,7 @@ export function useMockSession(setup: SessionSetup) {
   const [audioCaptureStream, setAudioCaptureStream] = useState<MediaStream | null>(null);
   const [transcript, setTranscript] = useState<TranscriptChunk[]>([]);
   const [activeTranscript, setActiveTranscript] = useState<TranscriptChunk | null>(null);
+  const activeTranscriptExpiryTimerRef = useRef<number | null>(null);
   const [coachPanel, setCoachPanel] = useState<CoachPanelState | null>(null);
   const [qaState, setQAState] = useState<QAState>(idleQAState);
   const [qaQuestion, setQAQuestion] = useState<QAQuestion | null>(null);
@@ -942,16 +944,44 @@ export function useMockSession(setup: SessionSetup) {
     await waitForPendingChunkTasks();
   }, [stopAudioCapture, waitForPendingChunkTasks]);
 
+  const clearActiveTranscriptExpiryTimer = useCallback(() => {
+    if (activeTranscriptExpiryTimerRef.current !== null) {
+      window.clearTimeout(activeTranscriptExpiryTimerRef.current);
+      activeTranscriptExpiryTimerRef.current = null;
+    }
+  }, []);
+
   const clearActiveTranscript = useCallback(() => {
+    clearActiveTranscriptExpiryTimer();
     transcriptStateRef.current = {
       ...transcriptStateRef.current,
       active: null,
     };
     setActiveTranscript(null);
-  }, []);
+  }, [clearActiveTranscriptExpiryTimer]);
+
+  const scheduleActiveTranscriptExpiry = useCallback(
+    (chunk: TranscriptChunk) => {
+      clearActiveTranscriptExpiryTimer();
+      activeTranscriptExpiryTimerRef.current = window.setTimeout(() => {
+        const currentActive = transcriptStateRef.current.active;
+        if (currentActive?.id !== chunk.id || currentActive.text !== chunk.text) {
+          return;
+        }
+        transcriptStateRef.current = {
+          ...transcriptStateRef.current,
+          active: null,
+        };
+        setActiveTranscript(null);
+        activeTranscriptExpiryTimerRef.current = null;
+      }, ACTIVE_TRANSCRIPT_STALE_MS);
+    },
+    [clearActiveTranscriptExpiryTimer],
+  );
 
   const applyFinalTranscriptChunk = useCallback(
     (incomingChunk: TranscriptChunk, replacePrevious: boolean) => {
+      clearActiveTranscriptExpiryTimer();
       const currentState = transcriptStateRef.current;
       const activeChunk = currentState.active;
       const fallbackStartMs = activeChunk?.startMs || buildElapsedMs(sessionStartedAtRef.current);
@@ -991,7 +1021,7 @@ export function useMockSession(setup: SessionSetup) {
       setTranscript(nextCommitted);
       setActiveTranscript(null);
     },
-    [],
+    [clearActiveTranscriptExpiryTimer],
   );
 
   const flushTranscript = useCallback((): FlushResult => {
@@ -1008,6 +1038,34 @@ export function useMockSession(setup: SessionSetup) {
       committed: transcriptStateRef.current.committed,
     };
   }, [setup.language]);
+
+  const flushActiveTranscript = useCallback((): FlushResult => {
+    const result = flushTranscript();
+    if (!result.active) {
+      clearActiveTranscript();
+      return result;
+    }
+
+    const nextCommitted = [...result.committed];
+    const lastCommitted = nextCommitted[nextCommitted.length - 1];
+    if (lastCommitted && lastCommitted.text.trim() === result.active.text.trim()) {
+      nextCommitted[nextCommitted.length - 1] = result.active;
+    } else {
+      nextCommitted.push(result.active);
+    }
+
+    clearActiveTranscriptExpiryTimer();
+    transcriptStateRef.current = {
+      active: null,
+      committed: nextCommitted,
+    };
+    setTranscript(nextCommitted);
+    setActiveTranscript(null);
+    return {
+      active: result.active,
+      committed: nextCommitted,
+    };
+  }, [clearActiveTranscript, clearActiveTranscriptExpiryTimer, flushTranscript]);
 
   const sendPcmChunk = useCallback(
     (samples: Float32Array, sourceRate: number) => {
@@ -1206,6 +1264,7 @@ export function useMockSession(setup: SessionSetup) {
             active: nextChunk,
           };
           setActiveTranscript(nextChunk);
+          scheduleActiveTranscriptExpiry(nextChunk);
           return;
         }
 
@@ -1317,6 +1376,7 @@ export function useMockSession(setup: SessionSetup) {
     clearSocket,
     applyFinalTranscriptChunk,
     clearActiveTranscript,
+    scheduleActiveTranscriptExpiry,
     discardAudioCapture,
     sendRealtimeMessage,
     sendVideoFrameEvent,
@@ -1458,12 +1518,13 @@ export function useMockSession(setup: SessionSetup) {
 
   useEffect(() => {
     return () => {
+      clearActiveTranscriptExpiryTimer();
       clearMediaTimer();
       clearSocket();
       stopQAAudioPlayback();
       void discardAudioCapture();
     };
-  }, [clearMediaTimer, clearSocket, discardAudioCapture, stopQAAudioPlayback]);
+  }, [clearActiveTranscriptExpiryTimer, clearMediaTimer, clearSocket, discardAudioCapture, stopQAAudioPlayback]);
 
   return {
     audioCaptureStream,
@@ -1479,6 +1540,7 @@ export function useMockSession(setup: SessionSetup) {
     statusText,
     transcript,
     flushTranscript,
+    flushActiveTranscript,
     qaState,
     qaQuestion,
     qaFeedback,

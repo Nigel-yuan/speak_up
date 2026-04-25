@@ -60,6 +60,7 @@ class SessionRecord:
     started_at_monotonic: float | None = None
     omni_coach_disabled_reason: str | None = None
     omni_body_disabled_reason: str | None = None
+    coach_lane_retry_after_monotonic: float = 0.0
     body_lane_retry_after_monotonic: float = 0.0
     body_lane_internal_error_count: int = 0
     body_lane_last_error_at_monotonic: float = 0.0
@@ -332,36 +333,11 @@ class SessionManager:
                 await websocket.send_json(AckEvent(message="stream already started").model_dump())
                 return
 
-            try:
-                await self.stt_service.connect_session(
-                    session.session_id,
-                    session.language,
-                    on_partial=lambda text: self.broadcast_partial(session, text),
-                    on_final=lambda result: self._broadcast_provider_transcript(session, result),
-                    on_error=lambda message: self._broadcast_provider_error(session, message),
-                    on_event=lambda stage, event, meta=None: self._handle_stt_provider_event(
-                        session.session_id,
-                        stage,
-                        event,
-                        meta,
-                    ),
-                )
-            except Exception as error:
-                await websocket.send_json(ErrorEvent(message=str(error)).model_dump())
+            if not await self._ensure_stt_session_connected(session, notify_socket=websocket):
                 return
 
             if session.omni_coach_disabled_reason is None:
-                try:
-                    await self.omni_coach_service.connect_session(
-                        session.session_id,
-                        session.scenario_id,
-                        session.language,
-                        on_insight=lambda update: self._broadcast_omni_update(session, update),
-                        on_error=lambda message: self._handle_omni_provider_error(session, "coach", message),
-                        on_event=None,
-                    )
-                except Exception as error:
-                    await self._handle_omni_connect_failure(session, "coach", error)
+                await self._ensure_coach_lane_connected(session)
             if session.omni_body_disabled_reason is None:
                 try:
                     await self.omni_body_service.connect_session(
@@ -394,14 +370,12 @@ class SessionManager:
 
         if message.type == "audio_chunk":
             session.audio_chunk_count += 1
-            try:
-                await self.stt_service.send_audio_chunk(session.session_id, message.payload)
-            except Exception as error:
-                await websocket.send_json(ErrorEvent(message=str(error)).model_dump())
+            if not await self._send_stt_audio_chunk(session, message.payload, notify_socket=websocket):
                 return
 
             if session.omni_coach_disabled_reason is None:
                 try:
+                    await self._ensure_coach_lane_connected(session)
                     await self.omni_coach_service.send_audio_chunk(session.session_id, message.payload)
                 except Exception as error:
                     await self._handle_omni_send_failure(session, "coach", f"发送音频到 Omni coach 失败：{error}")
@@ -691,14 +665,17 @@ class SessionManager:
         updated_at_ms = self._build_elapsed_ms(session)
 
         if update.patch is not None:
-            await self._record_report_coach_patch(session, update.patch, updated_at_ms)
+            patch = self.coach_panel_service.filter_omni_patch(update.patch, session.language)
+            if not patch.dimensions:
+                return
             coach_panel = self.coach_panel_service.update_from_omni_patch(
                 session.session_id,
                 session.language,
-                update.patch,
+                patch,
                 updated_at_ms,
             )
             if coach_panel is not None:
+                await self._record_report_coach_patch(session, patch, updated_at_ms)
                 await self._record_report_panel_snapshot(session, coach_panel, updated_at_ms)
                 await self._broadcast(session, CoachPanelEvent(coachPanel=coach_panel).model_dump())
 
@@ -847,6 +824,7 @@ class SessionManager:
 
         if lane == "coach":
             await self.omni_coach_service.close_session(session.session_id)
+            session.coach_lane_retry_after_monotonic = monotonic() + 2.0
 
     async def _handle_body_lane_internal_error(self, session: SessionRecord, raw_message: str) -> None:
         now = monotonic()
@@ -899,6 +877,71 @@ class SessionManager:
         )
         if first_report:
             await self._record_omni_error(session, reason)
+
+    async def _ensure_stt_session_connected(
+        self,
+        session: SessionRecord,
+        *,
+        notify_socket: WebSocket | None = None,
+    ) -> bool:
+        try:
+            await self.stt_service.connect_session(
+                session.session_id,
+                session.language,
+                on_partial=lambda text: self.broadcast_partial(session, text),
+                on_final=lambda result: self._broadcast_provider_transcript(session, result),
+                on_error=lambda message: self._broadcast_provider_error(session, message),
+                on_event=lambda stage, event, meta=None: self._handle_stt_provider_event(
+                    session.session_id,
+                    stage,
+                    event,
+                    meta,
+                ),
+            )
+            return True
+        except Exception as error:
+            logger.warning("stt.connect_failed session=%s error=%s", session.session_id, error)
+            payload = ErrorEvent(message=str(error)).model_dump()
+            if notify_socket is not None:
+                await notify_socket.send_json(payload)
+            else:
+                await self._broadcast(session, payload)
+            return False
+
+    async def _send_stt_audio_chunk(
+        self,
+        session: SessionRecord,
+        payload: str | None,
+        *,
+        notify_socket: WebSocket | None = None,
+    ) -> bool:
+        if not await self._ensure_stt_session_connected(session, notify_socket=notify_socket):
+            return False
+
+        try:
+            await self.stt_service.send_audio_chunk(session.session_id, payload)
+            return True
+        except Exception as error:
+            logger.warning("stt.send_failed_reconnect session=%s error=%s", session.session_id, error)
+            try:
+                await self.stt_service.close_session(session.session_id)
+            except Exception:
+                pass
+
+        if not await self._ensure_stt_session_connected(session, notify_socket=notify_socket):
+            return False
+
+        try:
+            await self.stt_service.send_audio_chunk(session.session_id, payload)
+            return True
+        except Exception as retry_error:
+            logger.warning("stt.send_failed_after_reconnect session=%s error=%s", session.session_id, retry_error)
+            payload_event = ErrorEvent(message=f"实时转写连接异常，重连后仍发送失败：{retry_error}").model_dump()
+            if notify_socket is not None:
+                await notify_socket.send_json(payload_event)
+            else:
+                await self._broadcast(session, payload_event)
+            return False
 
     async def _connect_qa_realtime_session(self, session: SessionRecord) -> None:
         instructions = self.qa_mode_orchestrator.build_realtime_instructions(
@@ -1709,6 +1752,30 @@ class SessionManager:
         except Exception as error:
             session.body_lane_retry_after_monotonic = monotonic() + 2.0
             await self._handle_omni_connect_failure(session, "body", error)
+
+    async def _ensure_coach_lane_connected(self, session: SessionRecord) -> None:
+        if session.omni_coach_disabled_reason is not None:
+            return
+        if session.status not in {"created", "streaming"}:
+            return
+        if session.session_id in self.omni_coach_service.connections:
+            return
+        if monotonic() < session.coach_lane_retry_after_monotonic:
+            return
+
+        try:
+            await self.omni_coach_service.connect_session(
+                session.session_id,
+                session.scenario_id,
+                session.language,
+                on_insight=lambda update: self._broadcast_omni_update(session, update),
+                on_error=lambda message: self._handle_omni_provider_error(session, "coach", message),
+                on_event=None,
+            )
+            session.coach_lane_retry_after_monotonic = 0.0
+        except Exception as error:
+            session.coach_lane_retry_after_monotonic = monotonic() + 2.0
+            await self._handle_omni_connect_failure(session, "coach", error)
 
     async def _broadcast(self, session: SessionRecord, payload: dict) -> None:
         stale: list[WebSocket] = []

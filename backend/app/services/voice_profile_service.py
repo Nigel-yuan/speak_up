@@ -15,6 +15,7 @@ class VoiceProfileConfig:
     instructions_zh: str
     instructions_en: str
     report_instruction_zh: str
+    report_style_examples: list[dict[str, str]]
 
     def instructions_for(self, language: LanguageOption) -> str:
         return self.instructions_en if language == "en" else self.instructions_zh
@@ -44,6 +45,7 @@ class VoiceProfileService:
         for item in payload:
             coach_id = str(item["id"])
             qa_style = item["qa_style"]
+            report_style = item["report_style"]
             persona_type = str(item["persona_type"])
             profiles[coach_id] = VoiceProfileConfig(
                 profile=VoiceProfile(
@@ -58,9 +60,34 @@ class VoiceProfileService:
                 omni_voice_id=str(qa_style["omni_voice_id"]),
                 instructions_zh=str(qa_style["instructions_zh"]),
                 instructions_en=str(qa_style["instructions_en"]),
-                report_instruction_zh=str(item["report_style"]["instruction_zh"]),
+                report_instruction_zh=str(report_style["instruction_zh"]),
+                report_style_examples=self._normalize_report_style_examples(
+                    report_style.get("dimension_examples", [])
+                ),
             )
         return profiles
+
+    @staticmethod
+    def _normalize_report_style_examples(value: object) -> list[dict[str, str]]:
+        if not isinstance(value, list):
+            return []
+        examples: list[dict[str, str]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            dimension = str(item.get("dimension") or "").strip()
+            positive = str(item.get("positive") or "").strip()
+            negative = str(item.get("negative") or "").strip()
+            if not dimension or not positive or not negative:
+                continue
+            examples.append(
+                {
+                    "dimension": dimension,
+                    "positive": positive,
+                    "negative": negative,
+                }
+            )
+        return examples
 
     def list_profiles(self) -> list[VoiceProfile]:
         return [config.profile for config in self._profiles.values()]

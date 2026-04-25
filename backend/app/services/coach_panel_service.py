@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from app.schemas import (
     CoachPanelPatch,
+    CoachPanelPatchDimension,
     CoachDimensionState,
     CoachPanelState,
     CoachSummary,
@@ -116,7 +117,7 @@ class CoachPanelService:
         session = self._ensure_session(session_id, language)
         next_panel = session.panel
 
-        for dimension_patch in patch.dimensions:
+        for dimension_patch in self.filter_omni_patch(patch, language).dimensions:
             status, headline, detail = self._sanitize_dimension_copy(
                 language,
                 dimension_patch.id,
@@ -140,6 +141,77 @@ class CoachPanelService:
             next_panel = self._set_dimension(next_panel, next_dimension)
 
         return self._commit_panel(session_id, next_panel)
+
+    def filter_omni_patch(self, patch: CoachPanelPatch, language: LanguageOption) -> CoachPanelPatch:
+        if not patch.dimensions:
+            return patch
+        filtered_dimensions: list[CoachPanelPatchDimension] = []
+        for dimension in patch.dimensions:
+            if self._should_drop_omni_dimension_patch(dimension):
+                replacement = self._build_neutral_body_dimension_patch(dimension, language)
+                if replacement is not None:
+                    filtered_dimensions.append(replacement)
+                continue
+            filtered_dimensions.append(dimension)
+
+        return CoachPanelPatch(dimensions=filtered_dimensions)
+
+    def _build_neutral_body_dimension_patch(
+        self,
+        dimension_patch: CoachPanelPatchDimension,
+        language: LanguageOption,
+    ) -> CoachPanelPatchDimension | None:
+        if dimension_patch.id != "body_expression":
+            return None
+
+        combined = f"{dimension_patch.headline} {dimension_patch.detail} {dimension_patch.evidenceText or ''}"
+        if self._looks_screen_gaze_warning(combined):
+            return CoachPanelPatchDimension(
+                id="body_expression",
+                status="stable",
+                headline=self._text(language, "屏幕前状态稳定", "Screen-facing posture is stable"),
+                detail=self._text(language, "看屏幕不算低头。", "Looking at the screen is fine."),
+                subDimensionId="facial_or_eye_engagement",
+                signalPolarity="neutral",
+                severity="low",
+                confidence=dimension_patch.confidence,
+                evidenceText=dimension_patch.evidenceText,
+            )
+        return CoachPanelPatchDimension(
+            id="body_expression",
+            status="stable",
+            headline=self._text(language, "肢体基本稳定", "Body is mostly stable"),
+            detail=self._text(language, "先保持当前姿态。", "Keep the current posture."),
+            subDimensionId=dimension_patch.subDimensionId,
+            signalPolarity="neutral",
+            severity="low",
+            confidence=dimension_patch.confidence,
+            evidenceText=dimension_patch.evidenceText,
+        )
+
+    def _should_drop_omni_dimension_patch(self, dimension_patch: CoachPanelPatchDimension) -> bool:
+        if dimension_patch.id != "body_expression" or dimension_patch.status != "adjust_now":
+            return False
+
+        confidence = dimension_patch.confidence
+        if confidence is not None and confidence < 0.68:
+            return True
+
+        combined = f"{dimension_patch.headline} {dimension_patch.detail} {dimension_patch.evidenceText or ''}"
+        if self._looks_face_blocking_signal(combined):
+            return confidence is None or confidence < 0.84
+
+        if self._looks_uncertain_hand_height_warning(dimension_patch.headline, dimension_patch.detail):
+            return confidence is None or confidence < 0.84
+
+        if self._looks_screen_gaze_warning(combined):
+            return (
+                confidence is None
+                or confidence < 0.92
+                or not self._looks_strong_head_down_evidence(combined)
+            )
+
+        return False
 
     def _ensure_session(self, session_id: str, language: LanguageOption) -> CoachPanelSessionState:
         existing = self.sessions.get(session_id)
@@ -338,9 +410,9 @@ class CoachPanelService:
             and self._looks_uncertain_hand_height_warning(normalized_headline, normalized_detail)
         ):
             return (
-                "analyzing",
-                self._text(language, "正在确认肢体反馈", "Checking body delivery"),
-                self._text(language, "手势证据还不够清楚。", "The hand-position evidence is not clear enough yet."),
+                "stable",
+                self._text(language, "肢体基本稳定", "Body is mostly stable"),
+                self._text(language, "先保持当前姿态。", "Keep the current posture."),
             )
 
         if status == "adjust_now" and self._looks_resolved_or_positive(normalized_detail):
@@ -470,6 +542,53 @@ class CoachPanelService:
             marker in combined for marker in height_markers
         )
 
+    @staticmethod
+    def _looks_screen_gaze_warning(text: str) -> bool:
+        normalized = text.strip().lower().replace(" ", "")
+        gaze_markers = (
+            "头先抬",
+            "抬头",
+            "抬起头",
+            "头抬起来",
+            "把头抬",
+            "看镜头",
+            "看摄像头",
+            "视线回到镜头",
+            "视线回到摄像头",
+            "低头",
+            "头低",
+            "raise your head".replace(" ", ""),
+            "lift your head".replace(" ", ""),
+            "look at the camera".replace(" ", ""),
+            "look into the camera".replace(" ", ""),
+            "bring your gaze back to the camera".replace(" ", ""),
+            "head down".replace(" ", ""),
+            "downward gaze".replace(" ", ""),
+        )
+        return any(marker in normalized for marker in gaze_markers)
+
+    @staticmethod
+    def _looks_strong_head_down_evidence(text: str) -> bool:
+        normalized = text.strip().lower().replace(" ", "")
+        strong_markers = (
+            "持续低头",
+            "长时间低头",
+            "明显低头",
+            "一直低头",
+            "下巴内收",
+            "下巴贴近",
+            "脸明显朝下",
+            "整张脸朝下",
+            "headstaysdown",
+            "sustainedheaddown",
+            "clearlyheaddown",
+            "clearlyloweredhead",
+            "chintucked",
+            "faceangleddownward",
+            "sustaineddownwardgaze",
+        )
+        return any(marker in normalized for marker in strong_markers)
+
     def _fallback_adjust_detail(
         self,
         language: LanguageOption,
@@ -486,7 +605,7 @@ class CoachPanelService:
                 if "hand" in normalized or "gesture" in normalized:
                     return "Bring the gesture back near your chest."
                 if "face" in normalized or "gaze" in normalized or "eye" in normalized:
-                    return "Bring your gaze back to the camera."
+                    return "Bring your gaze back near the top of the screen."
                 return "Fix this first, then keep going."
             if dimension_id == "voice_pacing":
                 return "Adjust this on the next line."
@@ -498,7 +617,7 @@ class CoachPanelService:
             if "手" in combined or "动作" in combined or "手势" in combined:
                 return "手势先收回胸前。"
             if "眼" in combined or "脸" in combined or "表情" in combined or "视线" in combined:
-                return "先把视线回到镜头。"
+                return "视线回到屏幕上方。"
             if "镜头" in combined or "回正" in combined or "居中" in combined:
                 return "先把位置调回镜头中间。"
             return "先按上面这一步调整。"

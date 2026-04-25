@@ -17,6 +17,11 @@ export interface CoachQAStyle {
 
 export interface CoachReportStyle {
   instructionZh: string;
+  dimensionExamples: Array<{
+    dimension: string;
+    positive: string;
+    negative: string;
+  }>;
 }
 
 export interface CoachProfile {
@@ -58,6 +63,11 @@ type RawCoachProfile = {
   };
   report_style: {
     instruction_zh: string;
+    dimension_examples?: Array<{
+      dimension: string;
+      positive: string;
+      negative: string;
+    }>;
   };
 };
 
@@ -86,6 +96,7 @@ const coachProfiles = (rawProfiles as RawCoachProfile[]).map<CoachProfile>((prof
   },
   reportStyle: {
     instructionZh: profile.report_style.instruction_zh,
+    dimensionExamples: profile.report_style.dimension_examples ?? [],
   },
 }));
 

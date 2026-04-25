@@ -10,6 +10,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from app.schemas import LanguageOption
+from app.services.aliyun_ws_config import aliyun_realtime_ws_connect_kwargs
 
 
 PartialTranscriptCallback = Callable[[str], Awaitable[None]]
@@ -70,6 +71,9 @@ class AliyunRealtimeAsrService:
     def is_configured(self) -> bool:
         return bool(self.api_key)
 
+    def is_connected(self, session_id: str) -> bool:
+        return session_id in self.connections
+
     async def connect_session(
         self,
         session_id: str,
@@ -89,7 +93,7 @@ class AliyunRealtimeAsrService:
         websocket = await websockets.connect(
             self._build_url(),
             additional_headers={"Authorization": f"bearer {self.api_key}"},
-            max_size=2**22,
+            **aliyun_realtime_ws_connect_kwargs(),
         )
 
         created_event = await self._receive_json(websocket)
@@ -281,13 +285,16 @@ class AliyunRealtimeAsrService:
                     await self._emit_provider_event(connection.on_event, "session_finished", event)
                     connection.finished.set()
                     break
-        except ConnectionClosed:
+        except ConnectionClosed as error:
             await self._emit_provider_event(
                 connection.on_event,
                 "connection_closed",
                 {"type": "connection.closed"},
+                {"message": self._format_connection_closed_error(error)},
             )
             connection.finished.set()
+            if not connection.finish_sent:
+                await connection.on_error(f"阿里云实时转写连接已断开：{self._format_connection_closed_error(error)}")
         except asyncio.CancelledError:
             connection.finished.set()
             raise
@@ -330,6 +337,13 @@ class AliyunRealtimeAsrService:
     def _extract_error_message(event: dict[str, Any]) -> str:
         error = event.get("error", {})
         return error.get("message") or "阿里云实时转写请求失败"
+
+    @staticmethod
+    def _format_connection_closed_error(error: ConnectionClosed) -> str:
+        reason = (error.reason or "").strip()
+        if reason:
+            return reason
+        return str(error)
 
     @staticmethod
     def _coerce_millis(value: Any) -> int | None:

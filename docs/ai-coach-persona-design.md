@@ -42,6 +42,7 @@
 - 前端展示：`slogan / bio / live_status`
 - 问答语音：`provider_voice_id / omni_voice_id / instructions`
 - 报告风格：`report_style.instruction_zh`
+- 报告风格案例：`report_style.dimension_examples`
 
 所以“教练”不只是头像，而是一份贯穿全链路的统一 profile。
 
@@ -148,6 +149,7 @@ QA 问答链路里，`coachProfileId` 最终会映射到：
 报告链路里，`coachProfileId` 会映射到：
 
 - 报告 system prompt / user prompt 里的风格约束
+- 报告风格案例库。案例只作为语气、比喻密度和边界感参考，不作为固定语料照抄。
 
 ## 7. 技术实现原则
 

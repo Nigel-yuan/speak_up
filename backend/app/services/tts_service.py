@@ -11,6 +11,7 @@ from urllib.parse import quote
 import websockets
 
 from app.schemas import LanguageOption
+from app.services.aliyun_ws_config import aliyun_realtime_ws_connect_kwargs
 from app.services.voice_profile_service import VoiceProfileConfig
 
 
@@ -125,7 +126,7 @@ class AliyunRealtimeTTSService:
         websocket = await websockets.connect(
             self._build_url(),
             additional_headers={"Authorization": f"Bearer {self.api_key}"},
-            max_size=2**22,
+            **aliyun_realtime_ws_connect_kwargs(),
         )
 
         try:

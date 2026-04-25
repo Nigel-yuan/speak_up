@@ -38,6 +38,23 @@ SCENARIO_LABELS: dict[ScenarioType, str] = {
     "standup": "脱口秀 / 即兴表达场景",
 }
 
+SCORE_RUBRIC_ZH = [
+    "90-100：非常出色，表达清楚、有吸引力，问题只剩精修。",
+    "80-89：表现稳定，有明确优点，少量短板不影响整体完成度。",
+    "70-79：基本可用，听众能跟上，但亮点不够稳定或问题较明显。",
+    "60-69：勉强过线，能听懂一部分，但短板已经影响说服力。",
+    "40-59：问题明显，结构、节奏、内容或呈现至少有一项拖垮体验。",
+    "0-39：严重失效，听众很难获得清晰信息，必须先重建基本表达。",
+]
+SCORE_RUBRIC_EN = [
+    "90-100: Excellent. Clear, engaging, and only needs refinement.",
+    "80-89: Strong and stable, with clear strengths and manageable issues.",
+    "70-79: Usable, but strengths are not stable or issues are easy to notice.",
+    "60-69: Barely passing. Some meaning lands, but weak areas hurt persuasion.",
+    "40-59: Clear problems. Structure, rhythm, content, or delivery hurts the experience.",
+    "0-39: Severely ineffective. The audience struggles to get a clear message.",
+]
+
 logger = logging.getLogger("speak_up.session")
 
 
@@ -55,11 +72,14 @@ class ReportBrainService:
             "ALIYUN_OPENAI_COMPAT_BASE_URL",
             "https://dashscope.aliyuncs.com/compatible-mode/v1",
         )
-        self.window_model = window_model or os.getenv("ALIYUN_REPORT_WINDOW_MODEL", "qwen-plus-latest")
-        self.final_model = final_model or os.getenv("ALIYUN_REPORT_BRAIN_MODEL", "qwen-plus-latest")
-        self.fallback_model = fallback_model or os.getenv("ALIYUN_REPORT_BRAIN_FALLBACK_MODEL", "qwen-max-latest")
+        self.window_model = window_model or os.getenv("ALIYUN_REPORT_WINDOW_MODEL", "qwen-flash")
+        self.final_model = final_model or os.getenv("ALIYUN_REPORT_BRAIN_MODEL", "qwen-flash")
+        self.fallback_model = fallback_model or os.getenv("ALIYUN_REPORT_BRAIN_FALLBACK_MODEL", "qwen-plus-latest")
         self.window_timeout_seconds = max(10.0, float(os.getenv("ALIYUN_REPORT_WINDOW_TIMEOUT_SECONDS", "30")))
         self.final_timeout_seconds = max(15.0, float(os.getenv("ALIYUN_REPORT_BRAIN_TIMEOUT_SECONDS", "45")))
+        self.window_max_tokens = max(800, int(os.getenv("ALIYUN_REPORT_WINDOW_MAX_TOKENS", "1600")))
+        self.final_max_tokens = max(1200, int(os.getenv("ALIYUN_REPORT_BRAIN_MAX_TOKENS", "2600")))
+        self.enable_thinking = os.getenv("ALIYUN_REPORT_ENABLE_THINKING", "false").strip().lower() == "true"
         self.voice_profile_service = VoiceProfileService()
 
     @property
@@ -93,12 +113,16 @@ class ReportBrainService:
             "你是 Speak Up 的离线报告窗口评估助手。"
             "你要评估一个时间窗口内的表现。"
             "不要输出整场最终结论，只输出当前窗口的结构化评估。"
+            "评分要严格使用 0-100 全量刻度，不能把 60-80 当安全区。"
+            "证据差就给低分，证据好就给高分；不要为了鼓励用户而保底 60。"
+            "每个维度的 strengths / weaknesses 必须和 score 一致：低于 70 必须指出明确问题，低于 60 不要写泛泛的表扬。"
             "必须输出 JSON。"
         )
         user_prompt = json.dumps(
             {
                 "language": language,
                 "scenario": SCENARIO_LABELS[scenario_id],
+                "score_rubric": self._score_rubric(language),
                 "window": {
                     "start_ms": window_start_ms,
                     "end_ms": window_end_ms,
@@ -138,6 +162,7 @@ class ReportBrainService:
             content = await self._chat(
                 model=self.window_model,
                 timeout_seconds=self.window_timeout_seconds,
+                max_tokens=self.window_max_tokens,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -239,8 +264,15 @@ class ReportBrainService:
             "不要使用内部维度 id 或机制术语，例如 rhythm、vocal_tone、content_quality、expression_structure、body、facial_expression、维度反馈。"
             "如果要给建议，必须改写成用户能直接理解的自然表达。"
             f"当前报告要采用“{coach_profile.coach_name}”这位教练的人设口吻，但仍然必须保持专业、克制、面向用户。"
+            "允许适度玩梗或用轻微口语类比，但最多一两处，不能喧宾夺主，不能攻击用户人格，不能把报告写成段子。"
+            "如果提供了 coach_report_style_reference，它只是风格案例，不是固定语料；不要逐句照抄。"
+            "你要学习案例里的语气、比喻密度和边界感，并迁移到其他维度或子维度上。"
+            "评分要严格使用 0-100 全量刻度，不能把 60-80 当安全区。"
+            "用户讲得差就直说差在哪里，讲得好就大胆夸具体好在哪里；分数、标题、总结、亮点和建议必须同向一致。"
+            "低于 60 的报告要直接指出关键问题，不要写成鼓励稿；80 以上要明确承认亮点，不要吝啬赞美。"
             "headline 必须直接说重点，像给用户的一句话提醒；不要写教练名，不要把标题包装成“某某报告”，不要带冒号标题，也不要写“阶段调整”“关键优化”这类抽象包装。"
-            "中文 headline 控制在 18 个字以内，优先使用“开场先说重点”“别绕铺垫，先给结论”这类用户一眼能懂的说法。"
+            "headline 不能写评分口径或内部评语，例如“问题明显”“别粉饰”“勉强过线”“严重失效”；必须写成用户下一轮能执行的动作。"
+            "中文 headline 控制在 18 个字以内，优先使用“先把逻辑理顺”“先把节奏稳住”“内容再讲实”这类用户一眼能懂的说法。"
             f"{coach_profile.report_instruction_zh}"
             "必须输出 JSON。"
         )
@@ -249,6 +281,23 @@ class ReportBrainService:
                 "language": language,
                 "scenario": SCENARIO_LABELS[scenario_id],
                 "weights": scenario_weights(scenario_id),
+                "score_rubric": self._score_rubric(language),
+                "style_rules": [
+                    "score < 60: direct criticism and concrete repair steps; do not praise generically",
+                    "60 <= score < 70: acknowledge barely passing, then name the main blocker",
+                    "70 <= score < 80: balanced but specific; note usable parts and visible gaps",
+                    "score >= 80: praise concrete strengths clearly, then give refinement advice",
+                    "memes or jokes are allowed only as a small seasoning, not as the main content",
+                ],
+                "coach_report_style_reference": {
+                    "coach_name": coach_profile.coach_name,
+                    "persona_type": coach_profile.persona_type,
+                    "usage_rule": (
+                        "These are style examples only. Do not copy them verbatim. "
+                        "Infer the same coach style for dimensions or sub-dimensions not listed."
+                    ),
+                    "dimension_examples": coach_profile.report_style_examples,
+                },
                 "window_packs": [pack.model_dump() for pack in window_packs],
                 "tail_window": self._tail_payload(tail_bundle),
                 "top_dimensions": list(TOP_DIMENSION_ORDER),
@@ -297,6 +346,7 @@ class ReportBrainService:
                 content = await self._chat(
                     model=model_name,
                     timeout_seconds=self.final_timeout_seconds,
+                    max_tokens=self.final_max_tokens,
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt},
@@ -353,9 +403,18 @@ class ReportBrainService:
         *,
         model: str,
         timeout_seconds: float,
+        max_tokens: int,
         messages: list[dict[str, str]],
         temperature: float,
     ) -> str:
+        body: dict[str, object] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if self._supports_thinking_toggle(model):
+            body["enable_thinking"] = self.enable_thinking
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
             response = await client.post(
                 f"{self.base_url.rstrip('/')}/chat/completions",
@@ -363,11 +422,7 @@ class ReportBrainService:
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "temperature": temperature,
-                },
+                json=body,
             )
         response.raise_for_status()
         payload = response.json()
@@ -449,6 +504,10 @@ class ReportBrainService:
     ) -> SessionReport:
         dimensions = self._dimension_scores_from_payload(payload.get("dimensions"), language=language, fallback=fallback.dimensions)
         overall_score = self._weighted_score(scenario_id, dimensions) if dimensions else fallback.overallScore
+        strengths_ranked = sorted(dimensions, key=lambda item: item.score, reverse=True)
+        weakness_ranked = sorted(dimensions, key=lambda item: item.score)
+        best_dimension = strengths_ranked[0] if strengths_ranked else None
+        weakest_dimension = weakness_ranked[0] if weakness_ranked else None
         headline = self._sanitize_report_headline(
             language=language,
             headline=self._coerce_str(payload.get("headline"), fallback.headline),
@@ -456,6 +515,15 @@ class ReportBrainService:
         )
         encouragement = self._coerce_str(payload.get("encouragement"), fallback.encouragement)
         summary_paragraph = self._coerce_str(payload.get("summary_paragraph"), fallback.summaryParagraph)
+        headline, encouragement, summary_paragraph = self._align_report_copy_with_score(
+            language=language,
+            overall_score=overall_score,
+            headline=headline,
+            encouragement=encouragement,
+            summary_paragraph=summary_paragraph,
+            best_dimension=best_dimension,
+            weakest_dimension=weakest_dimension,
+        )
         highlights = self._sanitize_highlights(
             language=language,
             payload=self._coerce_list(payload.get("highlights"), fallback.highlights),
@@ -546,10 +614,16 @@ class ReportBrainService:
                     ReportTopDimensionScore(
                         id=dimension_id,
                         label=top_dimension_label(dimension_id, language),
-                        score=78,
+                        score=50,
                         weight=scenario_weights(scenario_id)[dimension_id],
-                        strengths=[self._text(language, "表现基本稳定", "Performance stays mostly stable")],
-                        weaknesses=[],
+                        strengths=[],
+                        weaknesses=[
+                            self._text(
+                                language,
+                                "这一项缺少足够有效表现，不能按稳定发挥处理。",
+                                "There is not enough effective evidence to treat this as a stable performance.",
+                            )
+                        ],
                     )
                 )
                 continue
@@ -584,9 +658,9 @@ class ReportBrainService:
             coachProfileId=coach_profile_id,
             status="ready",
             overallScore=overall_score,
-            headline=self._build_headline(language, overall_score, best_dimension.label),
-            encouragement=self._build_encouragement(language, best_dimension.label),
-            summaryParagraph=self._build_summary(language, best_dimension.label, weakest_dimension.label),
+            headline=self._build_headline(language, overall_score, best_dimension.label, weakest_dimension.label),
+            encouragement=self._build_encouragement(language, overall_score, best_dimension.label, weakest_dimension.label),
+            summaryParagraph=self._build_summary(language, overall_score, best_dimension.label, weakest_dimension.label),
             highlights=self._fallback_highlights(language, strengths_ranked),
             suggestions=self._fallback_suggestions(language, weakness_ranked),
             radarMetrics=self._radar_metrics_from_dimensions(merged_dimensions),
@@ -639,30 +713,45 @@ class ReportBrainService:
         return grouped
 
     def _fallback_dimension_score(self, dimension_id: TopDimensionId, transcript_stats: dict, signals: list[dict]) -> int:
-        score = 82
+        score = 76
         for signal in signals:
             polarity = str(signal.get("signalPolarity") or "negative").lower()
             severity = str(signal.get("severity") or "medium").lower()
-            penalty = {"low": 2, "medium": 5, "high": 8}.get(severity, 4)
-            bonus = {"low": 1, "medium": 2, "high": 3}.get(severity, 2)
+            confidence = self._coerce_confidence(signal.get("confidence"), 0.75) or 0.75
+            confidence_scale = 0.75 + min(max(confidence, 0.0), 1.0) * 0.5
+            penalty = round({"low": 4, "medium": 9, "high": 15}.get(severity, 8) * confidence_scale)
+            bonus = round({"low": 2, "medium": 4, "high": 6}.get(severity, 3) * confidence_scale)
             if polarity == "positive":
                 score += bonus
             elif polarity == "neutral":
-                score -= 1
+                score -= 2
             else:
                 score -= penalty
 
         filler_density = float(transcript_stats.get("fillerDensity", 0))
         repetition_ratio = float(transcript_stats.get("repetitionRatio", 0))
         long_pause_count = int(transcript_stats.get("longPauseCount", 0))
+        restart_count = int(transcript_stats.get("restartCount", 0))
+        total_chars = int(transcript_stats.get("totalChars", 0))
+        negative_signal_count = sum(
+            1 for signal in signals if str(signal.get("signalPolarity") or "negative").lower() != "positive"
+        )
+        if negative_signal_count >= 4:
+            score -= min((negative_signal_count - 3) * 3, 12)
+        if total_chars <= 20:
+            score -= 18
         if dimension_id in {"content_quality", "expression_structure"}:
-            score -= int(repetition_ratio * 12)
+            score -= int(repetition_ratio * 30)
             if filler_density >= 0.08:
-                score -= 4
+                score -= 8
+            if filler_density >= 0.14:
+                score -= 8
+            score -= min(restart_count * 3, 12)
         if dimension_id in {"rhythm", "vocal_tone"}:
-            score -= min(long_pause_count * 2, 8)
-            score -= int(filler_density * 15)
-        return max(58, min(96, score))
+            score -= min(long_pause_count * 4, 18)
+            score -= int(filler_density * 35)
+            score -= min(restart_count * 2, 10)
+        return max(25, min(96, score))
 
     def _fallback_sub_dimensions(self, language: LanguageOption, signals: list[dict]) -> list[ReportSubDimensionScore]:
         grouped: dict[str, list[dict]] = defaultdict(list)
@@ -673,21 +762,23 @@ class ReportBrainService:
             grouped[sub_dimension_id].append(signal)
         result: list[ReportSubDimensionScore] = []
         for sub_dimension_id, items in grouped.items():
-            score = 84
+            score = 78
             for item in items:
                 polarity = str(item.get("signalPolarity") or "negative").lower()
                 severity = str(item.get("severity") or "medium").lower()
+                confidence = self._coerce_confidence(item.get("confidence"), 0.75) or 0.75
+                confidence_scale = 0.75 + min(max(confidence, 0.0), 1.0) * 0.5
                 if polarity == "positive":
-                    score += {"low": 1, "medium": 2, "high": 3}.get(severity, 2)
+                    score += round({"low": 2, "medium": 4, "high": 6}.get(severity, 3) * confidence_scale)
                 else:
-                    score -= {"low": 3, "medium": 6, "high": 9}.get(severity, 5)
+                    score -= round({"low": 5, "medium": 10, "high": 16}.get(severity, 8) * confidence_scale)
             latest = items[-1]
             reason = str(latest.get("detail") or latest.get("evidenceText") or "").strip()
             result.append(
                 ReportSubDimensionScore(
                     id=sub_dimension_id,
                     label=sub_dimension_label(sub_dimension_id, language),
-                    score=max(55, min(96, score)),
+                    score=max(25, min(96, score)),
                     reason=reason or self._text(language, "这一项需要继续观察。", "Keep watching this sub-dimension."),
                 )
             )
@@ -704,8 +795,10 @@ class ReportBrainService:
         strengths = [str(signal.get("headline") or "").strip() for signal in positives if str(signal.get("headline") or "").strip()]
         if strengths:
             return self._dedupe(strengths)[:3]
-        if score >= 84:
-            return [self._text(language, f"{top_dimension_label(dimension_id, language)}整体稳定。", f"{top_dimension_label(dimension_id, language)} stays stable overall.")]
+        if score >= 88:
+            return [self._text(language, f"{top_dimension_label(dimension_id, language)}是本轮非常明确的优势。", f"{top_dimension_label(dimension_id, language)} is a clear strength in this session.")]
+        if score >= 78:
+            return [self._text(language, f"{top_dimension_label(dimension_id, language)}整体比较稳。", f"{top_dimension_label(dimension_id, language)} is mostly stable.")]
         return []
 
     def _fallback_dimension_weaknesses(
@@ -720,6 +813,14 @@ class ReportBrainService:
         weaknesses = self._dedupe(weaknesses)[:3]
         if weaknesses:
             return weaknesses
+        if dimension_id in {"content_quality", "expression_structure"}:
+            filler_density = float(transcript_stats.get("fillerDensity", 0))
+            repetition_ratio = float(transcript_stats.get("repetitionRatio", 0))
+            restart_count = int(transcript_stats.get("restartCount", 0))
+            if repetition_ratio >= 0.2:
+                return [self._text(language, "表达有重复绕圈，信息推进不够干脆。", "The message repeats or circles instead of moving forward clearly.")]
+            if filler_density >= 0.08 or restart_count >= 2:
+                return [self._text(language, "口头填充和重起偏多，影响内容密度。", "Fillers and restarts reduce content density.")]
         if dimension_id == "rhythm" and int(transcript_stats.get("longPauseCount", 0)) >= 2:
             return [self._text(language, "长停顿偏多，节奏有波动。", "Long pauses make the rhythm less stable.")]
         return []
@@ -762,20 +863,28 @@ class ReportBrainService:
                 if fallback_item is not None:
                     result.append(fallback_item)
                 continue
+            score = self._coerce_score(raw_item.get("score"), fallback_item.score)
             sub_dimensions = self._sub_dimensions_from_payload(raw_item.get("sub_dimensions"), language, fallback_item.subDimensions)
             evidence_refs = self._evidence_refs_from_payload(
                 raw_item.get("evidence_refs"),
                 dimension_id=dimension_id,
                 fallback=fallback_item.evidenceRefs,
             )
+            strengths, weaknesses = self._align_dimension_copy_with_score(
+                language=language,
+                label=top_dimension_label(dimension_id, language),
+                score=score,
+                strengths=self._coerce_list(raw_item.get("strengths"), fallback_item.strengths),
+                weaknesses=self._coerce_list(raw_item.get("weaknesses"), fallback_item.weaknesses),
+            )
             result.append(
                 ReportTopDimensionScore(
                     id=dimension_id,
                     label=top_dimension_label(dimension_id, language),
-                    score=self._coerce_int(raw_item.get("score"), fallback_item.score),
+                    score=score,
                     weight=fallback_item.weight,
-                    strengths=self._coerce_list(raw_item.get("strengths"), fallback_item.strengths),
-                    weaknesses=self._coerce_list(raw_item.get("weaknesses"), fallback_item.weaknesses),
+                    strengths=strengths,
+                    weaknesses=weaknesses,
                     subDimensions=sub_dimensions,
                     evidenceRefs=evidence_refs,
                 )
@@ -801,7 +910,7 @@ class ReportBrainService:
                 ReportSubDimensionScore(
                     id=sub_dimension_id,
                     label=sub_dimension_label(sub_dimension_id, language),
-                    score=self._coerce_int(raw_item.get("score"), 78),
+                    score=self._coerce_score(raw_item.get("score"), 78),
                     reason=self._coerce_str(raw_item.get("reason"), self._text(language, "这一项需要继续观察。", "Keep watching this part.")),
                 )
             )
@@ -873,10 +982,19 @@ class ReportBrainService:
         for dimension in dimensions[:3]:
             if dimension.strengths:
                 highlights.append(f"{dimension.label}：{dimension.strengths[0]}")
-            else:
+            elif dimension.score >= 78:
                 highlights.append(
-                    self._text(language, f"{dimension.label}整体稳定。", f"{dimension.label} stays stable overall.")
+                    self._text(language, f"{dimension.label}：这一项相对稳定。", f"{dimension.label}: This area is relatively stable.")
                 )
+        if not highlights and dimensions:
+            weakest = sorted(dimensions, key=lambda item: item.score)[0]
+            highlights.append(
+                self._text(
+                    language,
+                    f"暂时没有明确高光，先把{weakest.label}拉回及格线。",
+                    f"There is no clear highlight yet; bring {weakest.label} back to passing level first.",
+                )
+            )
         return self._sanitize_highlights(
             language=language,
             payload=highlights[:3],
@@ -906,14 +1024,24 @@ class ReportBrainService:
             return self._dedupe(fallback_cleaned)[:3]
         regenerated: list[str] = []
         for dimension in dimensions[:3]:
-            candidate = dimension.strengths[0] if dimension.strengths else self._text(
-                language,
-                f"{dimension.label}整体较稳定。",
-                f"{dimension.label} stays relatively stable.",
-            )
+            if dimension.strengths:
+                candidate = dimension.strengths[0]
+            elif dimension.score >= 78:
+                candidate = self._text(language, "这一项相对稳定。", "This area is relatively stable.")
+            else:
+                continue
             if self._looks_like_meta_observation(candidate):
                 continue
             regenerated.append(f"{dimension.label}：{candidate}")
+        if not regenerated and dimensions:
+            weakest = sorted(dimensions, key=lambda item: item.score)[0]
+            regenerated.append(
+                self._text(
+                    language,
+                    f"暂时没有明确高光，先把{weakest.label}拉回及格线。",
+                    f"There is no clear highlight yet; bring {weakest.label} back to passing level first.",
+                )
+            )
         return self._dedupe(regenerated)[:3]
 
     @staticmethod
@@ -1000,6 +1128,175 @@ class ReportBrainService:
             result = f"{result}。"
         return result
 
+    @staticmethod
+    def _supports_thinking_toggle(model: str) -> bool:
+        normalized = model.strip().lower()
+        if not normalized:
+            return False
+        if normalized.startswith("qwen-max"):
+            return False
+        return any(
+            marker in normalized
+            for marker in (
+                "qwen-flash",
+                "qwen-plus",
+                "qwen-turbo",
+                "qwen3",
+            )
+        )
+
+    @staticmethod
+    def _score_rubric(language: LanguageOption) -> list[str]:
+        return SCORE_RUBRIC_EN if language == "en" else SCORE_RUBRIC_ZH
+
+    def _align_dimension_copy_with_score(
+        self,
+        *,
+        language: LanguageOption,
+        label: str,
+        score: int,
+        strengths: list[str],
+        weaknesses: list[str],
+    ) -> tuple[list[str], list[str]]:
+        clean_strengths = self._dedupe([item for item in strengths if item.strip()])[:3]
+        clean_weaknesses = self._dedupe([item for item in weaknesses if item.strip()])[:3]
+
+        if score < 70:
+            clean_strengths = [
+                item for item in clean_strengths if not self._looks_like_unqualified_praise(item)
+            ][:2]
+        if score < 75 and not clean_weaknesses:
+            clean_weaknesses = [self._default_dimension_weakness(language, label, score)]
+        if score >= 85 and not clean_strengths:
+            clean_strengths = [self._default_dimension_strength(language, label, score)]
+        return clean_strengths, clean_weaknesses
+
+    def _align_report_copy_with_score(
+        self,
+        *,
+        language: LanguageOption,
+        overall_score: int,
+        headline: str,
+        encouragement: str,
+        summary_paragraph: str,
+        best_dimension: ReportTopDimensionScore | None,
+        weakest_dimension: ReportTopDimensionScore | None,
+    ) -> tuple[str, str, str]:
+        best_label = best_dimension.label if best_dimension is not None else self._text(language, "相对稳定项", "the strongest area")
+        weakest_label = weakest_dimension.label if weakest_dimension is not None else self._text(language, "核心短板", "the weakest area")
+        default_headline = self._build_headline(language, overall_score, best_label, weakest_label)
+        default_encouragement = self._build_encouragement(language, overall_score, best_label, weakest_label)
+        default_summary = self._build_summary(language, overall_score, best_label, weakest_label)
+        combined = f"{headline}\n{encouragement}\n{summary_paragraph}"
+
+        if overall_score < 70:
+            return default_headline, default_encouragement, default_summary
+        if overall_score < 80 and self._looks_like_high_praise(combined):
+            return default_headline, default_encouragement, default_summary
+        if overall_score >= 80 and self._looks_like_severe_criticism(combined):
+            return default_headline, default_encouragement, default_summary
+        if overall_score >= 85 and not self._looks_like_unqualified_praise(combined):
+            return default_headline, default_encouragement, summary_paragraph or default_summary
+        return headline, encouragement, summary_paragraph
+
+    def _default_dimension_weakness(self, language: LanguageOption, label: str, score: int) -> str:
+        if score < 60:
+            return self._text(
+                language,
+                f"{label}没有达到可接受水平，已经影响听众理解或观感。",
+                f"{label} is below an acceptable level and hurts audience understanding or perception.",
+            )
+        return self._text(
+            language,
+            f"{label}只是勉强过线，还需要一个更明确的修正动作。",
+            f"{label} barely passes and still needs a more specific correction.",
+        )
+
+    def _default_dimension_strength(self, language: LanguageOption, label: str, score: int) -> str:
+        if score >= 90:
+            return self._text(
+                language,
+                f"{label}是本轮很突出的优势，可以放心保留。",
+                f"{label} is a standout strength and should be kept.",
+            )
+        return self._text(
+            language,
+            f"{label}表现稳定，是本轮比较可靠的长板。",
+            f"{label} is stable and reliable in this session.",
+        )
+
+    @staticmethod
+    def _looks_like_unqualified_praise(text: str) -> bool:
+        normalized = re.sub(r"\s+", "", text).lower()
+        if not normalized:
+            return False
+        praise_keywords = (
+            "很稳",
+            "稳定",
+            "不错",
+            "很好",
+            "优秀",
+            "出色",
+            "漂亮",
+            "成熟",
+            "清晰",
+            "顺畅",
+            "亮点",
+            "优势",
+            "可圈可点",
+            "扎实",
+            "到位",
+            "能打",
+            "good",
+            "great",
+            "strong",
+            "stable",
+            "excellent",
+            "standout",
+        )
+        caveat_keywords = ("但是", "但", "不过", "只是", "还不", "不够", "问题", "短板", "barely", "but", "however")
+        return any(keyword in normalized for keyword in praise_keywords) and not any(
+            keyword in normalized for keyword in caveat_keywords
+        )
+
+    @staticmethod
+    def _looks_like_high_praise(text: str) -> bool:
+        normalized = re.sub(r"\s+", "", text).lower()
+        high_praise_keywords = (
+            "非常出色",
+            "非常优秀",
+            "很漂亮",
+            "很棒",
+            "炸裂",
+            "封神",
+            "拉满",
+            "极好",
+            "excellent",
+            "outstanding",
+            "fantastic",
+            "brilliant",
+        )
+        return any(keyword in normalized for keyword in high_praise_keywords)
+
+    @staticmethod
+    def _looks_like_severe_criticism(text: str) -> bool:
+        normalized = re.sub(r"\s+", "", text).lower()
+        severe_keywords = (
+            "很差",
+            "严重失效",
+            "完全失控",
+            "毫无",
+            "拖垮",
+            "不及格",
+            "不能接受",
+            "severe",
+            "unacceptable",
+            "failed",
+            "collapse",
+            "broken",
+        )
+        return any(keyword in normalized for keyword in severe_keywords)
+
     def _radar_metrics_from_dimensions(self, dimensions: list[ReportTopDimensionScore]) -> list[RadarMetric]:
         return [
             RadarMetric(subject=dimension.label, score=dimension.score, fullMark=100)
@@ -1028,6 +1325,23 @@ class ReportBrainService:
 
         if "报告" in normalized or not result:
             result = fallback.strip(" ：:，,。.!！?？;；-—")
+            normalized = re.sub(r"\s+", "", result).lower()
+
+        blocked_headlines = (
+            "问题明显",
+            "别粉饰",
+            "问题明显别粉饰",
+            "勉强过线",
+            "勉强过线先补短板",
+            "严重失效",
+            "clearproblems",
+            "barelypassing",
+            "severeissues",
+        )
+        if any(keyword in normalized for keyword in blocked_headlines):
+            result = fallback.strip(" ：:，,。.!！?？;；-—")
+            if result == headline.strip(" ：:，,。.!！?？;；-—"):
+                result = self._text(language, "先把逻辑理顺", "Fix the structure first")
 
         if language == "en":
             result = re.sub(r"\bpost[- ]?(session|training)? report\b[:：]?\s*", "", result, flags=re.IGNORECASE)
@@ -1041,25 +1355,95 @@ class ReportBrainService:
             result = result[:18].rstrip(" ：:，,、")
         return result or "开场先说重点"
 
-    def _build_headline(self, language: LanguageOption, overall_score: int, best_dimension_label: str) -> str:
-        if overall_score >= 86:
-            return self._text(language, f"这轮 {best_dimension_label} 已经很稳", f"{best_dimension_label} is already a real strength")
-        if overall_score >= 78:
-            return self._text(language, "这轮整体表达已经比较成熟", "This round already feels more mature")
-        return self._text(language, "这轮已经有清晰的提升方向", "This round reveals a clear improvement path")
+    def _build_headline(
+        self,
+        language: LanguageOption,
+        overall_score: int,
+        best_dimension_label: str,
+        weakest_dimension_label: str,
+    ) -> str:
+        if overall_score >= 90:
+            return self._text(language, f"{best_dimension_label}很能打", f"{best_dimension_label} is a real strength")
+        if overall_score >= 80:
+            return self._text(language, "这轮表达很稳", "This round is strong")
+        if overall_score >= 70:
+            return self._text(language, f"再把{weakest_dimension_label}补齐", f"Tighten {weakest_dimension_label}")
+        if overall_score >= 60:
+            return self._text(language, self._headline_action_for_dimension(weakest_dimension_label), f"Fix {weakest_dimension_label} first")
+        return self._text(language, self._headline_action_for_dimension(weakest_dimension_label), f"Rebuild {weakest_dimension_label} first")
 
-    def _build_encouragement(self, language: LanguageOption, best_dimension_label: str) -> str:
+    @staticmethod
+    def _headline_action_for_dimension(dimension_label: str) -> str:
+        actions = {
+            "肢体": "先把肢体收住",
+            "表情": "先把表情打开",
+            "语音语调": "先把声音说清",
+            "节奏": "先把节奏稳住",
+            "内容质量": "先把内容讲实",
+            "表达结构": "先把逻辑理顺",
+        }
+        return actions.get(dimension_label, f"先补{dimension_label}短板")
+
+    def _build_encouragement(
+        self,
+        language: LanguageOption,
+        overall_score: int,
+        best_dimension_label: str,
+        weakest_dimension_label: str,
+    ) -> str:
+        if overall_score >= 90:
+            return self._text(
+                language,
+                f"这轮{best_dimension_label}发挥很漂亮，不是礼貌性表扬，是确实能支撑整场表达的优势。",
+                f"{best_dimension_label} was genuinely strong here, not just politely good.",
+            )
+        if overall_score >= 80:
+            return self._text(
+                language,
+                f"整体完成度已经不错，{best_dimension_label}是清楚的长板；下一步把{weakest_dimension_label}再收紧，表现会更有压迫感。",
+                f"The overall delivery is strong, especially {best_dimension_label}. Tighten {weakest_dimension_label} next.",
+            )
+        if overall_score >= 70:
+            return self._text(
+                language,
+                f"这轮能让人听懂，但还没到“哇，真稳”的程度。{best_dimension_label}可以保留，{weakest_dimension_label}要优先补。",
+                f"This is understandable, but not yet impressive. Keep {best_dimension_label} and improve {weakest_dimension_label}.",
+            )
+        if overall_score >= 60:
+            return self._text(
+                language,
+                f"这轮不是完全失控，但只是勉强过线。{weakest_dimension_label}已经在拖整体效果，下一轮别再平均用力。",
+                f"This did not collapse, but it barely passes. {weakest_dimension_label} is dragging the whole delivery down.",
+            )
         return self._text(
             language,
-            f"整场最稳定的部分是{best_dimension_label}。如果把最弱的一两项再收紧，完整度会明显上来。",
-            f"Your steadiest dimension is {best_dimension_label}. Tighten the weakest one or two areas and the whole performance will feel much stronger.",
+            f"这轮主要问题比较直接：{weakest_dimension_label}没有站住。先把这个点修好，再谈风格和高级感。",
+            f"The main issue is direct: {weakest_dimension_label} is not holding up. Fix that before chasing style.",
         )
 
-    def _build_summary(self, language: LanguageOption, best_dimension_label: str, weakest_dimension_label: str) -> str:
+    def _build_summary(
+        self,
+        language: LanguageOption,
+        overall_score: int,
+        best_dimension_label: str,
+        weakest_dimension_label: str,
+    ) -> str:
+        if overall_score >= 80:
+            return self._text(
+                language,
+                f"这轮的长板主要在{best_dimension_label}，已经能撑起基本观感；短板集中在{weakest_dimension_label}，属于精修项，不是推倒重来。",
+                f"The strongest area is {best_dimension_label}; {weakest_dimension_label} is a refinement target, not a full rebuild.",
+            )
+        if overall_score >= 60:
+            return self._text(
+                language,
+                f"这轮有可保留的部分，但{weakest_dimension_label}的问题太显眼，像一颗螺丝没拧紧，整台机器都跟着晃。下一轮先处理这一项。",
+                f"There are usable parts, but {weakest_dimension_label} is too visible. Fix that first in the next round.",
+            )
         return self._text(
             language,
-            f"这轮表现的长板主要在{best_dimension_label}，短板更集中在{weakest_dimension_label}。后续训练可以优先围绕短板做更针对性的重复练习。",
-            f"The strongest part of this session is {best_dimension_label}, while {weakest_dimension_label} needs the most work next. Future practice should focus there first.",
+            f"这轮不要粉饰成“还不错”。核心短板是{weakest_dimension_label}，它已经影响听众理解；先做基础修复，再谈亮点。",
+            f"Do not dress this up as fine. {weakest_dimension_label} is hurting audience understanding and needs basic repair first.",
         )
 
     @staticmethod
@@ -1147,6 +1531,14 @@ class ReportBrainService:
             return int(value)
         except (TypeError, ValueError):
             return fallback
+
+    @staticmethod
+    def _coerce_score(value: object, fallback: int) -> int:
+        try:
+            numeric = round(float(value))
+        except (TypeError, ValueError):
+            numeric = fallback
+        return max(0, min(100, int(numeric)))
 
     @staticmethod
     def _coerce_confidence(value: object, fallback: float | None) -> float | None:

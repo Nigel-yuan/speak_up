@@ -46,9 +46,9 @@ class ReportJobContext:
 
 class ReportJobService:
     def __init__(self) -> None:
-        interval_seconds = max(60, int(os.getenv("REPORT_WINDOW_BUILD_INTERVAL_SECONDS", "120")))
+        interval_seconds = max(20, int(os.getenv("REPORT_WINDOW_BUILD_INTERVAL_SECONDS", "40")))
         self.window_size_ms = interval_seconds * 1000
-        self.min_window_ms = max(60000, int(os.getenv("REPORT_WINDOW_MIN_MS", "180000")))
+        self.min_window_ms = max(20000, int(os.getenv("REPORT_WINDOW_MIN_MS", "40000")))
         self.artifact_service = ReportArtifactService()
         self.signal_service = ReportSignalService()
         self.repository = ReportRepository()

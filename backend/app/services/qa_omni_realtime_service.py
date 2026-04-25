@@ -13,6 +13,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from app.schemas import LanguageOption, ScenarioType
+from app.services.aliyun_ws_config import aliyun_realtime_ws_connect_kwargs
 from app.services.voice_profile_service import VoiceProfileConfig
 
 
@@ -96,7 +97,7 @@ class AliyunQAOmniRealtimeService:
         websocket = await websockets.connect(
             self._build_url(),
             additional_headers={"Authorization": f"bearer {self.api_key}"},
-            max_size=2**22,
+            **aliyun_realtime_ws_connect_kwargs(),
         )
 
         created_event = await self._receive_json(websocket)
@@ -241,7 +242,7 @@ class AliyunQAOmniRealtimeService:
             if pending is not None and not pending.done():
                 if not wait_for_ack:
                     return
-                await pending
+                await self._await_session_update_ack(pending)
 
             connection.pending_session_update = asyncio.get_running_loop().create_future()
             current_pending = connection.pending_session_update
@@ -272,7 +273,7 @@ class AliyunQAOmniRealtimeService:
                 return
 
             try:
-                updated_event = await asyncio.wait_for(current_pending, timeout=10)
+                updated_event = await asyncio.wait_for(self._await_session_update_ack(current_pending), timeout=10)
             finally:
                 if connection.pending_session_update is current_pending:
                     if not current_pending.done():
@@ -451,27 +452,19 @@ class AliyunQAOmniRealtimeService:
 
                 if event_type == "session.finished":
                     connection.finished.set()
-                    pending_update = connection.pending_session_update
-                    if pending_update is not None and not pending_update.done():
-                        pending_update.set_exception(RuntimeError("QA Omni Realtime 会话已结束"))
+                    self._resolve_pending_session_update_error(connection, "QA Omni Realtime 会话已结束")
                     await self._emit_provider_event(connection.on_event, "session_finished", event, None)
                     continue
         except ConnectionClosed as error:
             connection.finished.set()
-            pending_update = connection.pending_session_update
-            if pending_update is not None and not pending_update.done():
-                pending_update.set_exception(RuntimeError(self._format_connection_closed_error(error)))
+            self._resolve_pending_session_update_error(connection, self._format_connection_closed_error(error))
             if not connection.finish_sent:
                 await connection.on_error(self._format_connection_closed_error(error))
         except asyncio.CancelledError:
-            pending_update = connection.pending_session_update
-            if pending_update is not None and not pending_update.done():
-                pending_update.set_exception(RuntimeError("QA Omni Realtime reader 已取消"))
+            self._resolve_pending_session_update_error(connection, "QA Omni Realtime reader 已取消")
             raise
         except Exception as error:
-            pending_update = connection.pending_session_update
-            if pending_update is not None and not pending_update.done():
-                pending_update.set_exception(RuntimeError(f"QA Omni Realtime 连接异常：{error}"))
+            self._resolve_pending_session_update_error(connection, f"QA Omni Realtime 连接异常：{error}")
             await connection.on_error(f"QA Omni Realtime 连接异常：{error}")
             connection.finished.set()
         finally:
@@ -499,6 +492,26 @@ class AliyunQAOmniRealtimeService:
     async def _receive_json(websocket) -> dict[str, Any]:
         raw = await websocket.recv()
         return json.loads(raw)
+
+    async def _await_session_update_ack(self, pending: asyncio.Future[dict[str, Any]]) -> dict[str, Any]:
+        event = await pending
+        if event.get("type") == "error":
+            raise RuntimeError(self._extract_error_message(event))
+        return event
+
+    @staticmethod
+    def _resolve_pending_session_update_error(connection: AliyunQAOmniConnection, message: str) -> None:
+        pending_update = connection.pending_session_update
+        if pending_update is None or pending_update.done():
+            return
+        pending_update.set_result(
+            {
+                "type": "error",
+                "error": {
+                    "message": message,
+                },
+            }
+        )
 
     async def _send_json(self, connection: AliyunQAOmniConnection, payload: dict[str, Any]) -> None:
         connection.event_counter += 1

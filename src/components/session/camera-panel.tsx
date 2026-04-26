@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Card } from "@/components/ui/card";
+import { analyzeBodyVisualHint } from "@/lib/body-visual-hints";
+import type { CapturedVideoFrame } from "@/types/session";
 
 interface CameraPanelProps {
   children: React.ReactNode;
@@ -10,7 +12,7 @@ interface CameraPanelProps {
   elapsedSeconds: number;
   cameraStream?: MediaStream | null;
   cameraPermissionState?: "idle" | "granted" | "denied";
-  onFrameCaptureReady?: (capture: () => string | null) => void;
+  onFrameCaptureReady?: (capture: () => Promise<CapturedVideoFrame | null>) => void;
   onStreamReady?: (stream: MediaStream | null) => void;
   variant?: "stage" | "inset";
 }
@@ -92,7 +94,7 @@ export function CameraPanel({
       return;
     }
 
-    onFrameCaptureReady(() => {
+    onFrameCaptureReady(async () => {
       const video = videoRef.current;
       const canvas = canvasRef.current;
 
@@ -111,7 +113,9 @@ export function CameraPanel({
       }
 
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
-      return canvas.toDataURL("image/jpeg", 0.72);
+      const imageBase64 = canvas.toDataURL("image/jpeg", 0.72);
+      const bodyVisualHint = await analyzeBodyVisualHint(canvas);
+      return bodyVisualHint ? { imageBase64, bodyVisualHint } : { imageBase64 };
     });
   }, [onFrameCaptureReady]);
 

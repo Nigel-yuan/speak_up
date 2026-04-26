@@ -1,5 +1,6 @@
 import type { SessionReport } from "@/types/report";
 import type {
+  BodyVisualHint,
   CoachPanelState,
   CoachProfileId,
   QAFeedback,
@@ -194,6 +195,7 @@ export interface OutboundRealtimeMessage {
   payload?: string;
   turn_id?: string;
   image_base64?: string;
+  body_visual_hint?: BodyVisualHint;
   mime_type?: string;
   sample_rate_hz?: number;
   channels?: number;

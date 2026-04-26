@@ -44,7 +44,7 @@ OMNI_INTERNAL_SERVICE_ERROR_MARKER = "internal service error"
 OMNI_BODY_BUFFER_TOO_SMALL_MARKER = "buffer too small, or have no audio"
 OMNI_BODY_APPEND_IMAGE_BEFORE_AUDIO_MARKER = "append image before append audio"
 OMNI_INPUT_SAMPLE_RATE = 16000
-OMNI_BODY_SILENCE_PAYLOAD_MS = 120
+OMNI_BODY_SILENCE_PAYLOAD_MS = 160
 
 
 def is_omni_account_access_denied(message: str) -> bool:
@@ -632,7 +632,10 @@ class AliyunOmniCoachService:
             "For obvious head tilt or side lean, do not wait for multiple frames; the current visible posture is enough evidence. "
             "For openness or tension, check whether the upper body looks open and settled, or tight, lifted, collapsed, closed, or overly guarded. "
             "For gesture naturalness, check whether gestures are missing, too frequent, too fragmented, unsynced with the point, blocking the face, or frozen. "
-            "Only treat a hand as blocking the face when a hand or object visibly overlaps or hides the mouth, nose, eyes, chin, or a large part of the face in the current frame. "
+            "Face occlusion is a high-priority immediate cue even if the speaker is silent or the AI interviewer is speaking. "
+            "Treat a hand or object as blocking the face when it visibly overlaps or hides the mouth, nose, eyes, chin, or a large part of the face in the current frame. "
+            "Also treat palm-over-eyes, hand-over-mouth, hand covering the nose, hand supporting the face while hiding the mouth/eye/chin, or a phone/object covering the face as face occlusion. "
+            "For clear face occlusion, emit adjust_now immediately with confidence >= 0.74; do not wait for nearby speech audio or multiple frames. "
             "Do not warn about face blocking when a hand is merely near the face, near the frame edge, briefly passing through, or used as a normal emphasis gesture without occlusion. "
             "Do not treat a brief upward hand, upward fist, or lifted emphasis gesture as a problem when it clearly matches a strong positive line, a celebratory beat, or a confident emphasis point. "
             "Only warn about a raised hand when the hand, wrist, or forearm is clearly visible above shoulder height or beside the ear for a sustained moment and the gesture is disconnected from the spoken point. "
@@ -649,7 +652,7 @@ class AliyunOmniCoachService:
             "If only the head is visible but the face is still clear enough, you may still judge clear face occlusion, head tilt, facial tension, and eye engagement, but normal screen gaze is not a problem. "
             "Use analyzing only when both upper-body and face evidence are too weak to support a reliable judgment. "
             "Be conservative. Only use adjust_now when there is clear visible evidence right now. "
-            "If the speaker is visibly covering the face with a hand or object for a sustained moment, use adjust_now instead of analyzing and set confidence above 0.90. "
+            "If the speaker is visibly covering the face with a hand or object, use adjust_now instead of analyzing and set confidence above 0.74. "
             "If the head stays tilted or the speaker stays visibly off-center for a sustained moment, use adjust_now instead of analyzing. "
             "For gaze, do not use adjust_now unless the sustained head-down rule above is met. "
             "If the head is already severely tilted or the face is clearly angled far to one side, use adjust_now immediately instead of stable or should_emit=false. "
@@ -696,7 +699,10 @@ class AliyunOmniCoachService:
                     return
                 audio_payloads = self._collect_recent_body_audio_payloads(connection)
                 if len(audio_payloads) < self.body_audio_min_payloads:
-                    return
+                    audio_payloads = [
+                        *audio_payloads,
+                        *self._build_silence_audio_payloads(self.body_audio_min_payloads - len(audio_payloads)),
+                    ]
 
                 image_base64 = connection.latest_image_base64
                 connection.latest_image_dirty = False
@@ -754,7 +760,11 @@ class AliyunOmniCoachService:
         if count <= 0:
             return []
         sample_count = max(1, int(OMNI_INPUT_SAMPLE_RATE * OMNI_BODY_SILENCE_PAYLOAD_MS / 1000))
-        payload = base64.b64encode(b"\x00\x00" * sample_count).decode("ascii")
+        pcm = bytearray()
+        for index in range(sample_count):
+            sample = 1 if index % 2 == 0 else -1
+            pcm.extend(sample.to_bytes(2, byteorder="little", signed=True))
+        payload = base64.b64encode(bytes(pcm)).decode("ascii")
         return [payload] * count
 
     def _build_url(self) -> str:

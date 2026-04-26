@@ -6,17 +6,25 @@ import type {
   TrainingMode,
 } from "@/types/session";
 
+interface PracticeOption {
+  id: string;
+  label: string;
+}
+
 interface SessionToolbarProps {
   elapsedSeconds: number;
   documentAsset: TrainingDocumentAsset | null;
   isRunning: boolean;
   onDocumentClear: () => void;
   onDocumentPick: () => void;
+  onPracticeSelect: (practiceId: string) => void;
   onQAToggle: () => void;
   onTrainingModeChange: (mode: TrainingMode) => void;
   primaryControls: ReactNode;
+  practiceOptions: PracticeOption[];
   qaControls?: ReactNode;
   qaEnabled: boolean;
+  selectedPracticeId: string;
   trainingMode: TrainingMode;
 }
 
@@ -63,11 +71,14 @@ export function SessionToolbar({
   isRunning,
   onDocumentClear,
   onDocumentPick,
+  onPracticeSelect,
   onQAToggle,
   onTrainingModeChange,
   primaryControls,
+  practiceOptions,
   qaControls,
   qaEnabled,
+  selectedPracticeId,
   trainingMode,
 }: SessionToolbarProps) {
   const isDocumentMode = trainingMode === "document_speech";
@@ -119,6 +130,47 @@ export function SessionToolbar({
             <span className="rounded-full bg-white/80 px-2.5 py-1 text-xs font-semibold text-emerald-700">
               文档模式
             </span>
+            <div
+              className="flex min-w-0 flex-wrap items-center gap-1 rounded-full border border-emerald-100 bg-white/80 p-1"
+              role="group"
+              aria-label="练习文档"
+            >
+              <span className="rounded-full bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white">
+                练习文档
+              </span>
+              {selectedPracticeId === "custom" ? (
+                <button
+                  type="button"
+                  disabled
+                  className="rounded-full bg-emerald-50 px-3 py-1.5 text-sm font-semibold text-emerald-700 opacity-70"
+                  aria-pressed="true"
+                >
+                  自定义文档
+                </button>
+              ) : null}
+              {practiceOptions.map((option) => {
+                const active = selectedPracticeId === option.id;
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    disabled={qaEnabled}
+                    onClick={() => onPracticeSelect(option.id)}
+                    className={`rounded-full px-3 py-1.5 text-sm font-semibold transition ${
+                      active
+                        ? "bg-emerald-100 text-emerald-800"
+                        : qaEnabled
+                          ? "cursor-not-allowed text-emerald-500 opacity-60"
+                          : "text-emerald-700 hover:bg-emerald-50"
+                    }`}
+                    aria-pressed={active}
+                    title={qaEnabled ? "退出问答模式后可切换练习" : undefined}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
             <button
               type="button"
               disabled={qaEnabled}

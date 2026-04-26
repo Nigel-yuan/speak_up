@@ -4,7 +4,13 @@ import { CameraPanel } from "@/components/session/camera-panel";
 import { DocumentPreviewPanel } from "@/components/session/document-preview-panel";
 import { DocumentStage } from "@/components/session/document-stage";
 import { QAAvatarPanel } from "@/components/session/qa-avatar-panel";
-import type { QAQuestion, QAPhase, TrainingDocumentAsset, TrainingMode } from "@/types/session";
+import type {
+  CapturedVideoFrame,
+  QAQuestion,
+  QAPhase,
+  TrainingDocumentAsset,
+  TrainingMode,
+} from "@/types/session";
 
 interface SessionStageProps {
   avatarSrc: string;
@@ -19,7 +25,7 @@ interface SessionStageProps {
   qaAudioAutoPlay: boolean;
   qaEnabled: boolean;
   question: QAQuestion | null;
-  registerVideoFrameProvider: (capture: () => string | null) => void;
+  registerVideoFrameProvider: (capture: () => Promise<CapturedVideoFrame | null>) => void;
   speaking: boolean;
   statusMessage: string | null;
   trainingMode: TrainingMode;

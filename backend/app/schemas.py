@@ -14,6 +14,7 @@ CoachDisplayStatus = Literal["doing_well", "stable", "adjust_now", "analyzing"]
 CoachDimensionSource = Literal["system", "omni-coach", "speech-rule"]
 CoachSignalPolarity = Literal["positive", "neutral", "negative"]
 CoachSignalSeverity = Literal["low", "medium", "high"]
+BodyVisualHintIssue = Literal["face_occlusion", "hand_on_face", "head_tilt"]
 TranscriptSpeaker = Literal["user", "coach"]
 SessionStatus = Literal["created", "streaming", "finished"]
 VoiceGender = Literal["male", "female"]
@@ -130,6 +131,12 @@ class CoachPanelPatchDimension(BaseModel):
 
 class CoachPanelPatch(BaseModel):
     dimensions: list[CoachPanelPatchDimension] = Field(default_factory=list)
+
+
+class BodyVisualHint(BaseModel):
+    issue: BodyVisualHintIssue
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    evidence_text: str | None = None
 
 
 class SessionSetup(BaseModel):
@@ -445,6 +452,7 @@ class ClientMessage(BaseModel):
     payload: str | None = None
     turn_id: str | None = None
     image_base64: str | None = None
+    body_visual_hint: BodyVisualHint | None = None
     mime_type: str | None = None
     sample_rate_hz: int | None = None
     channels: int | None = None

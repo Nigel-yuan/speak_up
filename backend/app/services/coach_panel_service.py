@@ -10,6 +10,8 @@ from app.schemas import (
 )
 from app.services.speech_analysis_service import SpeechPanelUpdate
 
+LOCAL_BODY_VISUAL_HINT_HOLD_MS = 4500
+
 
 @dataclass
 class CoachPanelSessionState:
@@ -118,6 +120,8 @@ class CoachPanelService:
         next_panel = session.panel
 
         for dimension_patch in self.filter_omni_patch(patch, language).dimensions:
+            if self._should_keep_recent_local_body_hint(next_panel.bodyExpression, dimension_patch, updated_at_ms):
+                continue
             status, headline, detail = self._sanitize_dimension_copy(
                 language,
                 dimension_patch.id,
@@ -141,6 +145,20 @@ class CoachPanelService:
             next_panel = self._set_dimension(next_panel, next_dimension)
 
         return self._commit_panel(session_id, next_panel)
+
+    @staticmethod
+    def _should_keep_recent_local_body_hint(
+        current_dimension: CoachDimensionState,
+        next_patch: CoachPanelPatchDimension,
+        updated_at_ms: int,
+    ) -> bool:
+        if next_patch.id != "body_expression" or next_patch.status not in {"stable", "doing_well", "analyzing"}:
+            return False
+        if current_dimension.status != "adjust_now":
+            return False
+        if not current_dimension.evidenceText or "local_visual_hint" not in current_dimension.evidenceText:
+            return False
+        return updated_at_ms - current_dimension.updatedAtMs < LOCAL_BODY_VISUAL_HINT_HOLD_MS
 
     def filter_omni_patch(self, patch: CoachPanelPatch, language: LanguageOption) -> CoachPanelPatch:
         if not patch.dimensions:
@@ -199,7 +217,7 @@ class CoachPanelService:
 
         combined = f"{dimension_patch.headline} {dimension_patch.detail} {dimension_patch.evidenceText or ''}"
         if self._looks_face_blocking_signal(combined):
-            return confidence is None or confidence < 0.84
+            return confidence is None or confidence < 0.72
 
         if self._looks_uncertain_hand_height_warning(dimension_patch.headline, dimension_patch.detail):
             return confidence is None or confidence < 0.84
@@ -497,14 +515,35 @@ class CoachPanelService:
             "遮住眼",
             "挡住鼻",
             "遮住鼻",
+            "盖住眼睛",
+            "盖住眼",
+            "盖眼睛",
+            "盖眼",
+            "手盖眼睛",
+            "手盖眼",
             "手挡脸",
             "手遮脸",
             "手捂脸",
+            "手撑脸",
+            "撑着脸",
+            "撑脸",
+            "手托脸",
+            "托腮",
+            "托着脸",
             "handcoverstheface",
             "handcoveringtheface",
             "handiscoveringtheface",
             "handblockstheface",
             "handisblockingtheface",
+            "handcoverseyes",
+            "handcoveringeyes",
+            "handcoversthemouth",
+            "handcoveringmouth",
+            "handproppingtheface",
+            "handrestingonface",
+            "handonchin",
+            "palmovereyes",
+            "palmovermouth",
             "coveringtheface",
             "blockstheface",
             "blockingtheface",

@@ -26,6 +26,18 @@ export interface TranscriptChunk {
 export type CoachDimensionId = "body_expression" | "voice_pacing" | "content_expression";
 export type CoachDisplayStatus = "doing_well" | "stable" | "adjust_now" | "analyzing";
 export type CoachDimensionSource = "system" | "omni-coach" | "speech-rule";
+export type BodyVisualHintIssue = "face_occlusion" | "hand_on_face" | "head_tilt";
+
+export interface BodyVisualHint {
+  issue: BodyVisualHintIssue;
+  confidence: number;
+  evidence_text: string;
+}
+
+export interface CapturedVideoFrame {
+  imageBase64: string;
+  bodyVisualHint?: BodyVisualHint;
+}
 
 export interface CoachSummary {
   title: string;

@@ -75,6 +75,56 @@ const QA_START_FILLER_TOKENS = {
   en: new Set(["um", "uh", "well", "so", "ok", "okay", "sure", "got", "it", "hmm", "hm", "hmmm", "mhm", "mm"]),
 };
 
+const DEFAULT_DOCUMENT_TEXT =
+  "Speak Up 是一款 AI 演讲训练产品。它在演讲中实时生成文字稿、语音节奏、内容表达和肢体反馈；演讲后提供问答追问、回放与报告，帮助用户发现问题、反复练习，把表达从能说清楚提升到更有说服力。";
+
+const BUILT_IN_PRACTICES = [
+  {
+    id: "product_intro",
+    label: "产品简介",
+    title: "Speak Up 产品简介",
+    text: DEFAULT_DOCUMENT_TEXT,
+  },
+  {
+    id: "vision_call",
+    label: "愿景号召",
+    title: "经典练习：愿景号召",
+    text: "今天我想邀请大家看见一个更清晰的未来：表达不再只是少数人的天赋，而是每个人都能训练出的能力。当我们敢于开口、持续修正、一次比一次更准确地说出想法，团队协作、个人影响力和关键机会都会随之改变。",
+  },
+  {
+    id: "change_moment",
+    label: "变革时刻",
+    title: "经典练习：变革时刻",
+    text: "真正的改变通常不是从宏大的口号开始，而是从一个具体动作开始。今天我们先承认问题：很多人不是没有想法，而是不知道如何清楚、有力地表达。接下来要做的，是把每一次练习都变成一次可衡量、可复盘、可进步的训练。",
+  },
+  {
+    id: "launch_pitch",
+    label: "产品发布",
+    title: "经典练习：产品发布",
+    text: "我们做这款产品，是因为演讲训练长期缺少即时反馈。Speak Up 会在你开口时同步生成文字稿、语音节奏、内容结构和肢体建议；结束后再通过问答、回放和报告，帮你知道哪里好、哪里要改、下一次怎么练。",
+  },
+] as const;
+
+type BuiltInPracticeId = (typeof BUILT_IN_PRACTICES)[number]["id"];
+type PracticeSelectionId = BuiltInPracticeId | "custom";
+
+function buildPracticeDocumentAsset(practiceId: BuiltInPracticeId): TrainingDocumentAsset {
+  const practice = BUILT_IN_PRACTICES.find((item) => item.id === practiceId) ?? BUILT_IN_PRACTICES[0];
+  return {
+    kind: "md",
+    name: `${practice.title}.md`,
+    objectUrl: null,
+    markdownSource: `# ${practice.title}\n\n${practice.text}`,
+    extractedText: practice.text,
+    extractedCharCount: practice.text.length,
+    preview: {
+      kind: "none",
+      status: "ready",
+      message: null,
+    },
+  };
+}
+
 function normalizeQAStartText(text: string) {
   return text.trim().toLowerCase().replace(/[\s,.!?，。！？、…:：;；"'“”‘’（）()\-]/g, "");
 }
@@ -102,11 +152,16 @@ export function SessionWorkspace({
   const router = useRouter();
   const { cacheReplayMedia, error: sessionError, saveResult } = useSessionResult();
   const coachProfiles = useMemo(() => getCoachProfiles(), []);
-  const [documentAsset, setDocumentAsset] = useState<TrainingDocumentAsset | null>(null);
+  const practiceOptions = useMemo(
+    () => BUILT_IN_PRACTICES.map((practice) => ({ id: practice.id, label: practice.label })),
+    [],
+  );
+  const [selectedPracticeId, setSelectedPracticeId] = useState<PracticeSelectionId>("product_intro");
+  const [documentAsset, setDocumentAsset] = useState<TrainingDocumentAsset | null>(() => buildPracticeDocumentAsset("product_intro"));
   const [documentError, setDocumentError] = useState<string | null>(null);
   const [documentLoading, setDocumentLoading] = useState(false);
   const language = "zh";
-  const [trainingMode, setTrainingMode] = useState<TrainingMode>("free_speech");
+  const [trainingMode, setTrainingMode] = useState<TrainingMode>("document_speech");
   const [qaEnabled, setQAEnabled] = useState(false);
   const [qaStoppedByUser, setQAStoppedByUser] = useState(false);
   const [cameraPermissionState, setCameraPermissionState] = useState<"idle" | "granted" | "denied">("idle");
@@ -401,6 +456,27 @@ export function SessionWorkspace({
     documentInputRef.current?.click();
   };
 
+  const selectPracticeDocument = (practiceId: string) => {
+    if (qaEnabled || practiceId === "custom") {
+      return;
+    }
+    const hasPractice = BUILT_IN_PRACTICES.some((practice) => practice.id === practiceId);
+    if (!hasPractice) {
+      return;
+    }
+    if (currentDocumentUrlRef.current) {
+      URL.revokeObjectURL(currentDocumentUrlRef.current);
+      currentDocumentUrlRef.current = null;
+    }
+    setSelectedPracticeId(practiceId as BuiltInPracticeId);
+    setDocumentAsset(buildPracticeDocumentAsset(practiceId as BuiltInPracticeId));
+    setDocumentError(null);
+    setDocumentLoading(false);
+    if (documentInputRef.current) {
+      documentInputRef.current.value = "";
+    }
+  };
+
   const clearDocumentAsset = () => {
     if (qaEnabled) {
       return;
@@ -410,6 +486,7 @@ export function SessionWorkspace({
       currentDocumentUrlRef.current = null;
     }
     setDocumentAsset(null);
+    setSelectedPracticeId("custom");
     setDocumentError(null);
     setDocumentLoading(false);
     if (documentInputRef.current) {
@@ -559,6 +636,7 @@ export function SessionWorkspace({
       if (isPdf) {
         const objectUrl = URL.createObjectURL(file);
         currentDocumentUrlRef.current = objectUrl;
+        setSelectedPracticeId("custom");
         setDocumentAsset({
           kind: "pdf",
           name: file.name,
@@ -571,6 +649,7 @@ export function SessionWorkspace({
         return;
       }
 
+      setSelectedPracticeId("custom");
       setDocumentAsset({
         kind: "md",
         name: file.name,
@@ -584,6 +663,7 @@ export function SessionWorkspace({
       if (isPdf) {
         const objectUrl = URL.createObjectURL(file);
         currentDocumentUrlRef.current = objectUrl;
+        setSelectedPracticeId("custom");
         setDocumentAsset({
           kind: "pdf",
           name: file.name,
@@ -599,6 +679,7 @@ export function SessionWorkspace({
         });
       } else {
         setDocumentAsset(null);
+        setSelectedPracticeId("custom");
       }
       setDocumentError(extractionError instanceof Error ? extractionError.message : "文档正文抽取失败");
     } finally {
@@ -701,6 +782,7 @@ export function SessionWorkspace({
             isRunning={isRunning && !controlsDisabled}
             onDocumentClear={clearDocumentAsset}
             onDocumentPick={openDocumentPicker}
+            onPracticeSelect={selectPracticeDocument}
             onQAToggle={handleQAToggle}
             onTrainingModeChange={handleTrainingModeChange}
             primaryControls={
@@ -724,6 +806,8 @@ export function SessionWorkspace({
               ) : null
             }
             qaEnabled={qaEnabled}
+            practiceOptions={practiceOptions}
+            selectedPracticeId={selectedPracticeId}
             trainingMode={trainingMode}
           />
           <div className="min-h-0 flex-1">

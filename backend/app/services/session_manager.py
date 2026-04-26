@@ -10,7 +10,10 @@ from fastapi import WebSocket
 
 from app.schemas import (
     AckEvent,
+    BodyVisualHint,
     CoachPanelEvent,
+    CoachPanelPatch,
+    CoachPanelPatchDimension,
     ClientMessage,
     ErrorEvent,
     PongEvent,
@@ -65,6 +68,8 @@ class SessionRecord:
     body_lane_internal_error_count: int = 0
     body_lane_last_error_at_monotonic: float = 0.0
     speech_preview_last_update_ms: int = 0
+    body_visual_hint_signature: str | None = None
+    body_visual_hint_last_at_ms: int = 0
     transcript_chunks: list[TranscriptChunk] = field(default_factory=list)
     sockets: list[WebSocket] = field(default_factory=list, repr=False)
 
@@ -398,6 +403,8 @@ class SessionManager:
 
         if message.type == "video_frame":
             session.video_frame_count += 1
+            if message.body_visual_hint is not None:
+                await self._broadcast_body_visual_hint(session, message.body_visual_hint)
             if session.omni_body_disabled_reason is not None:
                 return
             try:
@@ -678,6 +685,66 @@ class SessionManager:
                 await self._record_report_coach_patch(session, patch, updated_at_ms)
                 await self._record_report_panel_snapshot(session, coach_panel, updated_at_ms)
                 await self._broadcast(session, CoachPanelEvent(coachPanel=coach_panel).model_dump())
+
+    async def _broadcast_body_visual_hint(self, session: SessionRecord, hint: BodyVisualHint) -> None:
+        updated_at_ms = self._build_elapsed_ms(session)
+        confidence_bucket = int(hint.confidence * 10)
+        signature = f"{hint.issue}:{confidence_bucket}"
+        if (
+            session.body_visual_hint_signature == signature
+            and updated_at_ms - session.body_visual_hint_last_at_ms < 2500
+        ):
+            return
+
+        session.body_visual_hint_signature = signature
+        session.body_visual_hint_last_at_ms = updated_at_ms
+        if hint.issue == "head_tilt":
+            headline = self._text(session.language, "头先回正", "Center your head")
+            detail = self._text(session.language, "把头回到中线。", "Bring your head back to center.")
+            sub_dimension_id = "alignment"
+            severity = "high" if hint.confidence >= 0.86 else "medium"
+        elif hint.issue == "face_occlusion":
+            headline = self._text(session.language, "手先离开脸", "Move your hand off your face")
+            detail = self._text(session.language, "别挡住嘴和眼。", "Keep your mouth and eyes clear.")
+            sub_dimension_id = "facial_or_eye_engagement"
+            severity = "high" if hint.confidence >= 0.86 else "medium"
+        else:
+            headline = self._text(session.language, "手别撑脸", "Do not prop your face")
+            detail = self._text(session.language, "手放回胸前。", "Bring your hand back near your chest.")
+            sub_dimension_id = "gesture_naturalness"
+            severity = "medium"
+
+        patch = CoachPanelPatch(
+            dimensions=[
+                CoachPanelPatchDimension(
+                    id="body_expression",
+                    status="adjust_now",
+                    headline=headline,
+                    detail=detail,
+                    subDimensionId=sub_dimension_id,
+                    signalPolarity="negative",
+                    severity=severity,
+                    confidence=max(0.74, hint.confidence),
+                    evidenceText=hint.evidence_text or f"local_visual_hint:{hint.issue}",
+                )
+            ]
+        )
+        coach_panel = self.coach_panel_service.update_from_omni_patch(
+            session.session_id,
+            session.language,
+            patch,
+            updated_at_ms,
+        )
+        logger.info(
+            "omni.body.local_hint session=%s issue=%s confidence=%.2f",
+            session.session_id,
+            hint.issue,
+            hint.confidence,
+        )
+        if coach_panel is not None:
+            await self._record_report_coach_patch(session, patch, updated_at_ms)
+            await self._record_report_panel_snapshot(session, coach_panel, updated_at_ms)
+            await self._broadcast(session, CoachPanelEvent(coachPanel=coach_panel).model_dump())
 
     async def _record_omni_error(self, session: SessionRecord, message: str) -> None:
         await self._broadcast(session, ErrorEvent(message=message).model_dump())
@@ -2011,5 +2078,9 @@ class SessionManager:
             return False
 
         return True
+
+    @staticmethod
+    def _text(language: LanguageOption, zh: str, en: str) -> str:
+        return en if language == "en" else zh
 
 session_manager = SessionManager()

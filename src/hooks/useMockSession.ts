@@ -11,6 +11,7 @@ import {
 import { getApiBaseUrl } from "@/lib/api-base";
 import type {
   CoachPanelState,
+  CapturedVideoFrame,
   QAFeedback,
   QAQuestion,
   QAState,
@@ -633,7 +634,8 @@ function resolveApiUrl(url: string | null | undefined) {
 export function useMockSession(setup: SessionSetup) {
   const socketRef = useRef<WebSocket | null>(null);
   const mediaTimerRef = useRef<number | null>(null);
-  const videoFrameProviderRef = useRef<(() => string | null) | null>(null);
+  const videoFrameProviderRef = useRef<(() => Promise<CapturedVideoFrame | null>) | null>(null);
+  const videoFrameSendInFlightRef = useRef(false);
   const audioStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
@@ -860,12 +862,25 @@ export function useMockSession(setup: SessionSetup) {
   }, [notifyQAAudioPlaybackEnded, stopQAAudioPlayback]);
 
   const sendVideoFrameEvent = useCallback(() => {
-    const timestamp = Date.now();
-    sendRealtimeMessage({
-      type: "video_frame",
-      timestamp_ms: timestamp,
-      image_base64: videoFrameProviderRef.current?.() ?? undefined,
-    });
+    if (videoFrameSendInFlightRef.current) {
+      return;
+    }
+
+    videoFrameSendInFlightRef.current = true;
+    void (async () => {
+      try {
+        const timestamp = Date.now();
+        const frame = (await videoFrameProviderRef.current?.()) ?? null;
+        sendRealtimeMessage({
+          type: "video_frame",
+          timestamp_ms: timestamp,
+          image_base64: frame?.imageBase64,
+          body_visual_hint: frame?.bodyVisualHint,
+        });
+      } finally {
+        videoFrameSendInFlightRef.current = false;
+      }
+    })();
   }, [sendRealtimeMessage]);
 
   const waitForPendingChunkTasks = useCallback(async () => {
@@ -1418,7 +1433,7 @@ export function useMockSession(setup: SessionSetup) {
     }
   }, [clearActiveTranscript, clearMediaTimer, clearSocket, sessionState.sessionId, stopAudioCapture, waitForPendingChunkTasks]);
 
-  const registerVideoFrameProvider = useCallback((provider: () => string | null) => {
+  const registerVideoFrameProvider = useCallback((provider: () => Promise<CapturedVideoFrame | null>) => {
     videoFrameProviderRef.current = provider;
   }, []);
 

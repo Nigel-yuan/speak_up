@@ -4,7 +4,7 @@ import { CameraPanel } from "@/components/session/camera-panel";
 import { DocumentAssetPreview } from "@/components/session/document-viewer";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import type { TrainingDocumentAsset } from "@/types/session";
+import type { CapturedVideoFrame, TrainingDocumentAsset } from "@/types/session";
 
 interface DocumentStageProps {
   children: React.ReactNode;
@@ -14,7 +14,7 @@ interface DocumentStageProps {
   elapsedSeconds: number;
   isRunning: boolean;
   onDocumentPick: () => void;
-  onFrameCaptureReady?: (capture: () => string | null) => void;
+  onFrameCaptureReady?: (capture: () => Promise<CapturedVideoFrame | null>) => void;
 }
 
 function EmptyDocumentState({ onDocumentPick }: { onDocumentPick: () => void }) {
